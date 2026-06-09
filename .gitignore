@@ -1,0 +1,17 @@
+# Secrets
+.env
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/routers/__pycache__/
+**/__pycache__/
+*.pyc
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/.git/
+
+# OS
+.DS_Store

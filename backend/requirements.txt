@@ -1,0 +1,7 @@
+fastapi==0.136.1
+uvicorn==0.47.0
+motor
+python-jose[cryptography]
+httpx
+python-dotenv
+python-multipart
