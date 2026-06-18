@@ -11,3 +11,5 @@ Contribution Report: As Teacher access submission of each group, contribution re
 Student Dashboard
 View Assignments, Group Members, Distribute Tasks (which are clearly defined in logs)
 Edit Assignments in Google Docs/Slides, upload link to dashboard to automatically see it embedded.
+
+pgrep -lf "next dev" || (cd /Users/jason/groupsyncv2/frontend && npm run dev)

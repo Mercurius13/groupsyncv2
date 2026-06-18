@@ -38,5 +38,5 @@ export async function fetchMe(): Promise<User | null> {
 }
 
 export function roleDashboard(role: Role): string {
-  return role === "admin" ? "/admin" : role === "instructor" ? "/teacher" : "/student"
+  return role === "student" ? "/student" : "/teacher"
 }

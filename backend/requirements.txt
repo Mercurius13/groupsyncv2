@@ -5,3 +5,6 @@ python-jose[cryptography]
 httpx
 python-dotenv
 python-multipart
+google-api-python-client
+google-auth
+aiofiles

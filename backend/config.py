@@ -9,6 +9,8 @@ JWT_SECRET = os.environ["JWT_SECRET"]
 ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
 MONGODB_URI = os.environ["MONGODB_URI"]
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+# Path to the service account JSON key file, relative to the backend directory
+GOOGLE_SERVICE_ACCOUNT_KEY = os.environ.get("GOOGLE_SERVICE_ACCOUNT_KEY", "")
 
 GOOGLE_REDIRECT_URI = "http://localhost:8000/auth/callback"
 FRONTEND_URL = "http://localhost:3000"

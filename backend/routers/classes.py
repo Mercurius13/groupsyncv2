@@ -72,6 +72,41 @@ async def list_students(class_id: str, user=Depends(get_current_user)):
     return [{"id": str(s["_id"]), "email": s["email"], "name": s["name"], "role": s["role"]} for s in students]
 
 
+class StudentAdd(BaseModel):
+    name: str
+    email: str
+
+
+@router.post("/{class_id}/students")
+async def add_student(class_id: str, body: StudentAdd, user=Depends(get_current_user)):
+    _instructor_or_admin(user)
+    cls = await _get_class_or_404(class_id)
+    email = body.email.strip().lower()
+    name = body.name.strip()
+    if not email or not name:
+        raise HTTPException(status_code=400, detail="Name and email are required")
+
+    existing_students = set(cls.get("students", []))
+    existing_user = await db.users.find_one({"email": email})
+    if existing_user:
+        uid = str(existing_user["_id"])
+        # Use existing name if student is already in the system
+        name = existing_user.get("name", name)
+    else:
+        result = await db.users.insert_one({"email": email, "name": name, "role": "student"})
+        uid = str(result.inserted_id)
+
+    added = uid not in existing_students
+    if added:
+        existing_students.add(uid)
+        await db.classes.update_one(
+            {"_id": ObjectId(class_id)},
+            {"$set": {"students": list(existing_students)}},
+        )
+
+    return {"added": added, "id": uid, "name": name, "email": email}
+
+
 @router.post("/{class_id}/roster")
 async def upload_roster(class_id: str, file: UploadFile = File(...), user=Depends(get_current_user)):
     _instructor_or_admin(user)
@@ -120,6 +155,30 @@ def _find_col(headers: list, candidates: list) -> str | None:
         if c in lower:
             return headers[lower.index(c)]
     return None
+
+
+@router.delete("/{class_id}")
+async def delete_class(class_id: str, user=Depends(get_current_user)):
+    _instructor_or_admin(user)
+    cls = await _get_class_or_404(class_id)
+    oid = ObjectId(class_id)
+
+    # Cascade: assignments → submissions → contribution reports
+    assignments = await db.assignments.find({"class_id": class_id}).to_list(None)
+    assignment_ids = [str(a["_id"]) for a in assignments]
+    submissions = await db.submissions.find({"assignment_id": {"$in": assignment_ids}}).to_list(None)
+    submission_ids = [str(s["_id"]) for s in submissions]
+
+    if submission_ids:
+        await db.contribution_reports.delete_many({"submission_id": {"$in": submission_ids}})
+    if submission_ids:
+        await db.submissions.delete_many({"_id": {"$in": [ObjectId(i) for i in submission_ids]}})
+    if assignment_ids:
+        await db.assignments.delete_many({"class_id": class_id})
+
+    await db.groups.delete_many({"class_id": class_id})
+    await db.classes.delete_one({"_id": oid})
+    return {"ok": True}
 
 
 async def _get_class_or_404(class_id: str):

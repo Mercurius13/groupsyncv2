@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -59,6 +60,20 @@ async def callback(code: str):
     google_id: str = info["id"]
     name: str = info["name"]
 
+    # Drive tokens, used by the contribution engine to read revision history.
+    # Google only returns refresh_token on consent, so keep the old one if absent.
+    google_tokens = {
+        "access_token": tokens["access_token"],
+        "expires_at": (
+            datetime.now(timezone.utc) + timedelta(seconds=tokens.get("expires_in", 3600))
+        ).isoformat(),
+    }
+    if tokens.get("refresh_token"):
+        google_tokens["refresh_token"] = tokens["refresh_token"]
+        token_update = {"$set": {"google_tokens": google_tokens}}
+    else:
+        token_update = {"$set": {f"google_tokens.{k}": v for k, v in google_tokens.items()}}
+
     existing = await db.users.find_one({"google_id": google_id})
     if not existing:
         # Match a stub record created via CSV roster import (no google_id yet)
@@ -78,6 +93,8 @@ async def callback(code: str):
                 "role": role,
             })
             existing = await db.users.find_one({"google_id": google_id})
+
+    await db.users.update_one({"_id": existing["_id"]}, token_update)
 
     token = jwt.encode(
         {"sub": str(existing["_id"]), "email": email, "role": existing["role"]},

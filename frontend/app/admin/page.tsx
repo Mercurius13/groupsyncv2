@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { fetchMe, clearToken, authHeaders, type User } from "@/lib/auth"
+import { fetchMe, authHeaders, type User } from "@/lib/auth"
+import { Sidebar } from "@/components/sidebar"
 
 type Role = "admin" | "instructor" | "student"
 
@@ -57,38 +58,30 @@ export default function AdminDashboard() {
       })
     : users
 
-  if (!me) return (
-    <div className="flex min-h-screen items-center justify-center text-sm text-gray-400">Loading…</div>
-  )
+  if (!me) return <div className="flex min-h-screen items-center justify-center text-sm text-gray-400">Loading…</div>
 
   return (
-    <main className="min-h-screen bg-gray-50 p-8">
-      <div className="max-w-4xl mx-auto space-y-6">
+    <div className="flex min-h-screen bg-gray-100">
+    <Sidebar role="admin" userName={me.name || me.email} />
+    <div className="ml-20 flex-1 min-h-screen">
+      {/* Top bar */}
+      <div className="bg-white border-b border-gray-200 px-8 py-4">
+        <h1 className="text-xl font-semibold text-gray-900">Admin</h1>
+        <p className="text-sm text-gray-500">{me.email}</p>
+      </div>
 
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Admin Dashboard</h1>
-            <p className="text-sm text-gray-500 mt-1">{me.email}</p>
-          </div>
-          <button
-            onClick={() => { clearToken(); router.replace("/") }}
-            className="text-sm text-gray-500 hover:text-gray-800"
-          >
-            Sign out
-          </button>
-        </div>
-
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search by name or email…"
-          className="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100">
+      <div className="p-8 max-w-4xl space-y-6">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-4">
             <h2 className="font-semibold text-gray-800">All Users ({filtered.length})</h2>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search by name or email…"
+              className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 w-64"
+            />
           </div>
+
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-gray-500 uppercase text-xs tracking-wide">
               <tr>
@@ -108,7 +101,7 @@ export default function AdminDashboard() {
                       disabled={saving === u.id || u.email === me.email}
                       onChange={(e) => changeRole(u.id, e.target.value as Role)}
                       className={`rounded-md border px-2 py-1 text-sm font-medium cursor-pointer
-                        focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-blue-500
+                        focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-blue-400
                         disabled:opacity-50 disabled:cursor-not-allowed
                         ${ROLE_STYLES[u.role]}`}
                     >
@@ -129,8 +122,8 @@ export default function AdminDashboard() {
             </tbody>
           </table>
         </div>
-
       </div>
-    </main>
+    </div>
+    </div>
   )
 }
