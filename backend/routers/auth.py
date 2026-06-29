@@ -1,13 +1,12 @@
-from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import RedirectResponse
 from jose import jwt
 
 from config import (
     GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI,
-    JWT_SECRET, JWT_ALGORITHM, ADMIN_EMAIL, FRONTEND_URL,
+    JWT_SECRET, JWT_ALGORITHM, FRONTEND_URL,
 )
 from database import db
 from dependencies import get_current_user
@@ -26,7 +25,6 @@ def login():
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
         "scope": "openid email profile",
-        "access_type": "offline",
         "prompt": "select_account",
     })
     return RedirectResponse(f"{GOOGLE_AUTH_URL}?{params}")
@@ -60,44 +58,20 @@ async def callback(code: str):
     google_id: str = info["id"]
     name: str = info["name"]
 
-    # Drive tokens, used by the contribution engine to read revision history.
-    # Google only returns refresh_token on consent, so keep the old one if absent.
-    google_tokens = {
-        "access_token": tokens["access_token"],
-        "expires_at": (
-            datetime.now(timezone.utc) + timedelta(seconds=tokens.get("expires_in", 3600))
-        ).isoformat(),
-    }
-    if tokens.get("refresh_token"):
-        google_tokens["refresh_token"] = tokens["refresh_token"]
-        token_update = {"$set": {"google_tokens": google_tokens}}
-    else:
-        token_update = {"$set": {f"google_tokens.{k}": v for k, v in google_tokens.items()}}
-
-    existing = await db.users.find_one({"google_id": google_id})
+    # F1.4: professors only — every account created here is a professor.
+    # Students are roster entries (see routers/roster.py), never users.
+    existing = await db.professors.find_one({"google_id": google_id})
     if not existing:
-        # Match a stub record created via CSV roster import (no google_id yet)
-        stub = await db.users.find_one({"email": email, "google_id": {"$exists": False}})
-        if stub:
-            await db.users.update_one(
-                {"_id": stub["_id"]},
-                {"$set": {"google_id": google_id, "name": name}},
-            )
-            existing = await db.users.find_one({"_id": stub["_id"]})
-        else:
-            role = "admin" if email == ADMIN_EMAIL else "student"
-            await db.users.insert_one({
-                "email": email,
-                "name": name,
-                "google_id": google_id,
-                "role": role,
-            })
-            existing = await db.users.find_one({"google_id": google_id})
-
-    await db.users.update_one({"_id": existing["_id"]}, token_update)
+        await db.professors.insert_one({
+            "email": email,
+            "name": name,
+            "google_id": google_id,
+            "institution_id": None,
+        })
+        existing = await db.professors.find_one({"google_id": google_id})
 
     token = jwt.encode(
-        {"sub": str(existing["_id"]), "email": email, "role": existing["role"]},
+        {"sub": str(existing["_id"]), "email": email},
         JWT_SECRET,
         algorithm=JWT_ALGORITHM,
     )
@@ -110,5 +84,5 @@ async def me(user=Depends(get_current_user)):
         "id": str(user["_id"]),
         "email": user["email"],
         "name": user["name"],
-        "role": user["role"],
+        "institution_id": user.get("institution_id"),
     }

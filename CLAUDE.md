@@ -6,88 +6,107 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project: GroupSync
 
-A classroom tool for teachers to organize students into groups, manage Google Docs/Slides-based assignments, and automatically generate contribution scores per student based on edit history.
+An **evidence tool** for professors grading collaborative Google Docs work — not a scoring tool.
+It attributes authorship at the character level inside a browser extension (local-only, never
+transmitted) and produces a plain-language, per-person breakdown the professor uses as evidence,
+applying all judgment themselves.
 
----
+**`HANDOVER.md` is the source of truth for architecture and non-negotiable constraints (C1–C5)
+and overrides anything below if they conflict.** Read it first. `EXTENSION.MD`, `BACKEND.md`,
+`FRONTEND.md`, `DATABASE.md` hold the four per-component specs (functional requirements, current
+state, and a remaining-work list each) — `EXTENSION.MD` is NOT a duplicate of `HANDOVER.md`, it's
+the extension's own detailed F1–F8 requirements doc, parallel to the other three.
 
-## Architecture
+This is a **fat-extension / local-analysis** architecture (pivoted from an earlier thin-client /
+server-side-scoring design — that old design is dead, do not resurrect it):
+
+| Component | Role | Touches student edit data? |
+|---|---|---|
+| **Extension** (`extension/`) | The analysis engine: capture + replay + structure + signals + narration. Runs entirely in the professor's browser. | YES — locally only, never transmitted |
+| **Frontend** (`frontend/`) | Management dashboard + evidence viewer. Account, licensing, roster, disclosure. Displays evidence the extension produced. | NO raw data — only opt-in, content-stripped summaries |
+| **Backend** (`backend/`) | Identity, licensing/billing, rosters, disclosure records. Content-free. | NO |
+| **Database** | Accounts, licenses, rosters, disclosure records, optional content-stripped summaries. | NO raw mutations, ever |
 
 ### Tech Stack
-- **Frontend**: Next.js (App Router) + TypeScript + Tailwind CSS + shadcn/ui
+- **Extension**: TypeScript, esbuild, vitest, Chrome Manifest V3 (`extension/`)
+- **Frontend**: Vite + React + TypeScript + react-router (decided 2026-06-29, not Next.js)
 - **Backend**: FastAPI (Python 3.14, venv already at `backend/.venv`)
-- **Database**: MongoDB (NoSQL — stores users, roles, classes, groups, assignments, contribution reports)
-- **Auth**: Google OAuth 2.0 (all users authenticate via Google; role is stored in DB)
-- **Email**: Resend API (for sending student group invites)
-- **External API**: Google Docs / Google Slides API (for reading edit history and calculating contribution scores)
-
-### Roles
-| Role | Access | How assigned |
-|---|---|---|
-| Admin | Admin Dashboard | Hardcoded to `jason.dsouza.here@gmail.com` |
-| Instructor | Teacher Dashboard | Admin promotes a user via Admin Dashboard |
-| Student | Student Dashboard | Invited by Instructor via email |
-
-### Core Data Models (MongoDB collections)
-- **users** — `{ _id, email, name, role: admin|instructor|student, google_id }`
-- **classes** — `{ _id, name, instructor_id, students: [user_id], created_at }`
-- **groups** — `{ _id, class_id, name, members: [user_id] }`
-- **assignments** — `{ _id, class_id, title, instructions, deadline, created_at }`
-- **submissions** — `{ _id, assignment_id, group_id, doc_url, submitted_at }`
-- **contribution_reports** — `{ _id, submission_id, scores: [{ user_id, score }], generated_at }`
-
-### Contribution Score Algorithm
-Triggered when a teacher views a group's submission. Backend calls the Google Docs/Slides API to fetch revision history. Each revision is attributed to an author; scores are weighted by edit count and character delta per user, normalized to 100.
+- **Database**: MongoDB
+- **Auth**: Google OAuth 2.0 (professors only — students are roster entries, not accounts)
 
 ---
 
-## Feature Breakdown & Build Order
+## Current State (as of 2026-06-29)
 
-### Phase 1 — Foundation
-- [ ] Backend: FastAPI app scaffold, MongoDB connection, env config (`.env`)
-- [ ] Backend: Google OAuth routes (`/auth/google`, `/auth/callback`, `/auth/me`)
-- [ ] Backend: JWT session middleware
-- [ ] Frontend: Next.js scaffold with Tailwind + shadcn/ui
-- [ ] Frontend: Google Sign-In flow, session cookie handling, role-based redirect
+Full per-component detail (purpose, functional requirements, current state, remaining work) now
+lives in each component's own doc — `EXTENSION.MD`, `BACKEND.md`, `FRONTEND.md`, `DATABASE.md`.
+This section is a summary; check the component doc before assuming something below is stale.
 
-### Phase 2 — Admin Dashboard
-- [ ] Backend: `GET /admin/users` — list all users; `PATCH /admin/users/:id/role` — set role
-- [ ] Frontend: Admin page (`/admin`) — table of all users with role dropdown (instructor/student)
-- [ ] Guard: only accessible to `jason.dsouza.here@gmail.com`
+### Extension — every F1-F8 requirement now has an implementation; several need live validation
+- ✅ Capture (live `/save` + `/bind`, confirmed against real traffic) and retroactive history
+  (`.../revisions/load`, confirmed against a real response 2026-06-28 — see `ME.MD`'s resolved
+  envelope item: the real shape is `{chunkedSnapshot, changelog}`, only `changelog` matters).
+- ✅ Replay, structure detection (newline paragraphs OR real Docs API heading/table ranges — F5.1-
+  F5.4, new this session), 9 named signals (paste/quarantine/integrator/late-concentration/
+  narration-phrase/revision-depth/concurrent-edit-boundary/non-roster-authorship/missing-roster-
+  member — F6.3/F6.6/F4.2/F7.5 closed this session), narration with a named rule ID per sentence
+  (F7.2) and form-aware hedging when Docs structure is known (F7.3), content-stripped export — all
+  wired into the popup, 121 tests passing, exercised by a real end-to-end test export (`test1.json`).
+- F4.2/F7.5 required a locally-typed "expected roster" textarea in the popup (never fetched over
+  the network — C1 only permits Google API calls from the extension, not calls to our own backend,
+  even though a real roster now exists server-side — see `EXTENSION.MD`'s remaining work for the
+  scope question this raises).
+- ⚠️ **Real, interpretive gaps still worth your read** (not just pending validation): F6.6's
+  concurrency signal is a "boundary" flag, not literal per-character "shared" attribution — the
+  confirmed real data format gives every command exactly one author, so there's no positional
+  ambiguity within replay itself to represent; see its code comment and `EXTENSION.MD`. F5's Docs
+  API integration doesn't detect inline equations or distinguish lists from prose (a real, narrow
+  limitation, documented in `EXTENSION.MD`). F5.5 (self-claimed sections) and F8.1/F8.3 (fixture
+  generator) remain genuinely unimplemented — no input source / lower priority, respectively.
+- Still-open validation items (Docs API index-alignment, concurrency thresholds, People API
+  non-contact resolution, paragraph-boundary assumption, narration wording): tracked in `ME.MD`.
 
-### Phase 3 — Teacher Dashboard
-- [ ] Backend: `POST /classes`, `GET /classes`, class CRUD
-- [ ] Backend: CSV roster import endpoint — parses Canvas export, creates student user records
-- [ ] Backend: `POST /classes/:id/groups`, drag-and-drop group assignment endpoints
-- [ ] Backend: `POST /invites` — sends group invite emails via Resend API
-- [ ] Backend: Assignment CRUD (`POST /assignments`, `GET /assignments/:class_id`)
-- [ ] Frontend: Teacher dashboard — class list, create class, upload roster
-- [ ] Frontend: Group organizer — drag-and-drop students across groups (dnd-kit)
-- [ ] Frontend: Assignment creation form with deadline picker
-- [ ] Frontend: Send invites button
-
-### Phase 4 — Student Dashboard
-- [ ] Backend: `GET /student/assignments` — assignments for the student's class
-- [ ] Backend: `GET /student/group` — group members for the logged-in student
-- [ ] Backend: `POST /submissions` — submit Google Doc/Slides URL for a group assignment
-- [ ] Backend: Task distribution log — `POST /tasks`, `GET /tasks/:group_id`
-- [ ] Frontend: Student dashboard — assignment list, group members panel
-- [ ] Frontend: Task distribution UI — assign tasks to members, log shown to all group members
-- [ ] Frontend: Submission — paste Google Doc/Slides URL, embedded iframe preview
-
-### Phase 5 — Contribution Engine
-- [ ] Backend: Google Docs API integration — fetch revision history for a doc
-- [ ] Backend: Google Slides API integration — fetch revision history for a presentation
-- [ ] Backend: Contribution score algorithm — normalize edits per user to 0–100
-- [ ] Backend: `GET /contributions/:submission_id` — trigger scoring, return/cache report
-- [ ] Frontend: Teacher contribution view — per-group, per-student score breakdown with visual bar
+### Backend, Frontend, Database — F1/F3/F4/F5 built and browser-verified; F2 (licensing) deferred
+- **Backend**: rebuilt to spec. Dead pre-pivot routers (`admin`/`invites`/`student`/`submissions`/
+  `tasks`) deleted. `auth`/`classes`/`assignments`/`groups`/`roster`/`disclosure`/`summaries`
+  implement F1/F3/F4/F5, verified against real MongoDB (full CRUD chain, CSV import, cross-
+  professor authorization, cascading deletes, `/summaries` accepting the extension's real export
+  unmodified). **F2 (licensing) explicitly deferred by decision — not started.** See `BACKEND.md`.
+- **Frontend**: rebuilt from the bare Vite scaffold into Vite + React + TS + react-router. F1
+  (login), F2 (class/assignment/group/roster CRUD), F3 (disclosure setup), F4 (evidence viewer),
+  F5 (evidence intake) all built and verified end-to-end in a real headless browser against the
+  real backend, using the real extension export — zero console errors. See `FRONTEND.md`.
+- **Database**: rebuilt — pre-pivot collections dropped (no real data existed to preserve);
+  real collections now match E2/E4–E9. E1 (Institution) and E3 (License) don't exist yet
+  (License tracks F2's deferral). See `DATABASE.md`.
 
 ---
 
-## Key External Services
-- **Google OAuth**: needs `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, redirect URI
-- **Google Docs/Slides API**: needs service account or OAuth scope `drive.readonly` + `docs.readonly`
-- **Resend**: needs `RESEND_API_KEY`
-- **MongoDB**: needs `MONGODB_URI`
+## Remaining Work (in dependency order — do not skip ahead per HANDOVER.md's build order)
+
+> Manual setup steps and things that need live validation against a real Google account/doc are
+> tracked in `ME.MD`. Per-component task detail lives in each component's own doc (linked below)
+> — this list is the cross-component sequencing, not a restatement of every item.
+
+1. ✅ ~~Extension capture + retroactive history (C4)~~ — done and confirmed against real traffic,
+   including the `revisions/load` envelope (`ME.MD`'s resolved item).
+2. ✅ ~~Author-name resolution~~ — done in `extension/src/identity/people.ts`. **Still open** (see
+   `ME.MD`): (a) register the OAuth redirect URI in Google Cloud Console (manual), (b) confirm live
+   whether People API resolves non-contact collaborators or the Drive-permissions fallback is needed.
+3. ✅ ~~Extension structure + signals + narration + export~~ — every F1-F8 requirement now has an
+   implementation (F4.2, F5.1-F5.4, F6.3, F6.6, F7.2, F7.5 all closed this session). **F5.5 and
+   F8.1/F8.3 remain genuinely unimplemented** (no input source / lower priority); several others
+   need live validation, not more code — see `EXTENSION.MD`'s Current State / Remaining Work and
+   `ME.MD`.
+4. ✅ ~~Backend rebuild (F1/F3/F4/F5)~~ — done, verified against real MongoDB. **F2 (licensing)
+   explicitly deferred** — needs a payment processor decision first (see `ME.MD`).
+5. ✅ ~~Database rebuild~~ — done in lockstep with the backend.
+6. ✅ ~~Frontend rebuild (F1-F5)~~ — done, verified end-to-end in a real browser. See `FRONTEND.md`'s
+   Remaining Work for polish items (license display once F2 exists, long-evidence-page UX, a real
+   design pass).
+7. **Institutional/compliance step (C2)**: before running on any real graded class, confirm
+   NJIT (or relevant institution) student-data sign-off — this is a gate, not a code task, but
+   don't build features that assume it's already cleared.
 
 ---
 

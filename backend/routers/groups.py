@@ -4,67 +4,63 @@ from pydantic import BaseModel
 
 from database import db
 from dependencies import get_current_user
+from routers.assignments import _get_owned_assignment_or_404
 
 router = APIRouter(prefix="/groups")
 
 
 class GroupCreate(BaseModel):
-    class_id: str
+    assignment_id: str
     name: str
 
 
 class GroupUpdate(BaseModel):
-    name: str | None = None
-    members: list[str] | None = None
+    name: str
+
+
+def _fmt(g: dict) -> dict:
+    return {"id": str(g["_id"]), "assignment_id": g["assignment_id"], "name": g["name"]}
 
 
 @router.get("")
-async def list_groups(class_id: str, user=Depends(get_current_user)):
-    groups = await db.groups.find({"class_id": class_id}).to_list(None)
-    result = []
-    for g in groups:
-        members = []
-        if g.get("members"):
-            oids = [ObjectId(m) for m in g["members"]]
-            users = await db.users.find({"_id": {"$in": oids}}).to_list(None)
-            members = [{"id": str(u["_id"]), "name": u["name"], "email": u["email"]} for u in users]
-        result.append({"id": str(g["_id"]), "name": g["name"], "class_id": g["class_id"], "members": members})
-    return result
+async def list_groups(assignment_id: str, user=Depends(get_current_user)):
+    await _get_owned_assignment_or_404(assignment_id, user)
+    groups = await db.groups.find({"assignment_id": assignment_id}).to_list(None)
+    return [_fmt(g) for g in groups]
 
 
 @router.post("")
 async def create_group(body: GroupCreate, user=Depends(get_current_user)):
-    result = await db.groups.insert_one({"class_id": body.class_id, "name": body.name, "members": []})
-    return {"id": str(result.inserted_id), "name": body.name, "class_id": body.class_id, "members": []}
+    await _get_owned_assignment_or_404(body.assignment_id, user)
+    doc = {"assignment_id": body.assignment_id, "name": body.name}
+    result = await db.groups.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return _fmt(doc)
 
 
 @router.patch("/{group_id}")
 async def update_group(group_id: str, body: GroupUpdate, user=Depends(get_current_user)):
-    try:
-        oid = ObjectId(group_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid group ID")
-
-    updates = {}
-    if body.name is not None:
-        updates["name"] = body.name
-    if body.members is not None:
-        updates["members"] = body.members
-
-    if not updates:
-        raise HTTPException(status_code=400, detail="Nothing to update")
-
-    result = await db.groups.update_one({"_id": oid}, {"$set": updates})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Group not found")
+    g = await _get_owned_group_or_404(group_id, user)
+    await db.groups.update_one({"_id": g["_id"]}, {"$set": {"name": body.name}})
     return {"ok": True}
 
 
 @router.delete("/{group_id}")
 async def delete_group(group_id: str, user=Depends(get_current_user)):
+    g = await _get_owned_group_or_404(group_id, user)
+    await db.roster_members.delete_many({"group_id": group_id})
+    await db.summaries.delete_many({"group_id": group_id})
+    await db.groups.delete_one({"_id": g["_id"]})
+    return {"ok": True}
+
+
+async def _get_owned_group_or_404(group_id: str, user: dict) -> dict:
     try:
         oid = ObjectId(group_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid group ID")
-    await db.groups.delete_one({"_id": oid})
-    return {"ok": True}
+    g = await db.groups.find_one({"_id": oid})
+    if not g:
+        raise HTTPException(status_code=404, detail="Group not found")
+    await _get_owned_assignment_or_404(g["assignment_id"], user)
+    return g

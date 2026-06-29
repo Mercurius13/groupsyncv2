@@ -16,3 +16,10 @@ frontend/.git/
 # OS
 .DS_Store
 service-account.json
+
+# JSON
+showrevisions.json
+showrevisionstrue.json
+titles.json
+test1.json
+ME.MD
