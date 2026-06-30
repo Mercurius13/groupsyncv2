@@ -7,7 +7,8 @@
   "host_permissions": [
     "https://docs.google.com/*",
     "https://people.googleapis.com/*",
-    "https://docs.googleapis.com/*"
+    "https://docs.googleapis.com/*",
+    "https://www.googleapis.com/*"
   ],
   "action": {
     "default_title": "GroupSync Evidence Panel",

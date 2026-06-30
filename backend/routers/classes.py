@@ -76,7 +76,6 @@ async def delete_class(class_id: str, user=Depends(get_current_user)):
         groups = await db.groups.find({"assignment_id": {"$in": assignment_ids}}).to_list(None)
         group_ids = [str(g["_id"]) for g in groups]
         if group_ids:
-            await db.roster_members.delete_many({"group_id": {"$in": group_ids}})
             await db.summaries.delete_many({"group_id": {"$in": group_ids}})
         await db.groups.delete_many({"assignment_id": {"$in": assignment_ids}})
         await db.assignments.delete_many({"class_id": class_id})

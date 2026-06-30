@@ -25,14 +25,10 @@ export interface GroupRecord {
   id: string;
   assignment_id: string;
   name: string;
-}
-
-export interface RosterMemberRecord {
-  id: string;
-  group_id: string;
-  student_name: string;
-  student_email: string;
-  google_user_id: string | null;
+  /** Count only, for the professor's reference / license seat-tracking
+   *  (decided 2026-06-29) — the backend never stores an actual roster of
+   *  named students. Name resolution happens in the extension. */
+  expected_size: number | null;
 }
 
 export interface DisclosureRecordEntry {
@@ -54,6 +50,7 @@ export interface ExportedSection {
 
 export interface AuthorCount {
   authorId: string;
+  authorName: string | null;
   originatedChars: number;
   totalSurvivingChars: number;
   originShare: number;

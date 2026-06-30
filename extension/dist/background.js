@@ -147,8 +147,23 @@ function parseChangelogEntry(entry) {
   const [command, timestamp, authorId] = entry;
   return commandToOps(command, authorId, timestamp);
 }
-function parseRevisionLoadResponse(raw) {
-  if (raw.length === 0) return [];
+function parseUserMapFromBody(body) {
+  const raw = body.userMap ?? body.users ?? body.authorMap ?? body.userInfo;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const result = {};
+  for (const [id, info] of Object.entries(raw)) {
+    if (typeof info === "string") {
+      result[id] = info;
+    } else if (info && typeof info === "object") {
+      const obj = info;
+      const name = obj["name"] ?? obj["displayName"] ?? obj["email"] ?? obj["emailAddress"];
+      if (typeof name === "string" && name.length > 0) result[id] = name;
+    }
+  }
+  return result;
+}
+function parseRevisionLoadResponseWithNames(raw) {
+  if (raw.length === 0) return { ops: [], names: {} };
   let body;
   try {
     body = JSON.parse(stripXssiPrefix(raw));
@@ -158,35 +173,47 @@ function parseRevisionLoadResponse(raw) {
       "revisions/load response was not valid JSON after stripping the XSSI prefix \u2014 the envelope may have changed; validate against a real doc before trusting this path."
     );
   }
+  console.log("[GroupSync history] top-level keys in revisions/load response:", Object.keys(body));
   if (!Array.isArray(body.changelog)) {
     throw historyError(
       "unparseable-response",
       "revisions/load response had no 'changelog' array \u2014 the envelope may have changed; validate against a real doc before trusting this path."
     );
   }
-  return body.changelog.flatMap(parseChangelogEntry);
+  const ops = body.changelog.flatMap(parseChangelogEntry);
+  const names = parseUserMapFromBody(body);
+  if (Object.keys(names).length > 0) {
+    console.log("[GroupSync history] extracted user map from response:", names);
+  } else {
+    console.log("[GroupSync history] no user map found in response (tried: userMap, users, authorMap, userInfo)");
+  }
+  return { ops, names };
 }
 async function fetchFullHistory(docId, fetchImpl = fetch) {
   const maxRev = await findMaxRevision(docId, fetchImpl);
   const ops = [];
+  const names = {};
   for (let start = 1; start <= maxRev; start += REVISIONS_PER_PAGE) {
     const end = Math.min(start + REVISIONS_PER_PAGE - 1, maxRev);
     const res = await fetchImpl(revisionLoadUrl(docId, start, end), { credentials: "include" });
     if (!res.ok) {
       throw historyError("fetch-failed", `revisions/load returned ${res.status} for range [${start}, ${end}]`);
     }
-    ops.push(...parseRevisionLoadResponse(await res.text()));
+    const page = parseRevisionLoadResponseWithNames(await res.text());
+    ops.push(...page.ops);
+    Object.assign(names, page.names);
   }
-  return ops;
+  return { ops, names };
 }
 
 // src/config.ts
 var GOOGLE_OAUTH_CLIENT_ID = "1064467429480-2qtbblj3v9iv2g7no6cd56hijfufvek0.apps.googleusercontent.com";
 
-// src/identity/people.ts
+// src/identity/index.ts
 var PEOPLE_API_SCOPE = "https://www.googleapis.com/auth/contacts.readonly";
 var DOCS_API_SCOPE = "https://www.googleapis.com/auth/documents.readonly";
-var OAUTH_SCOPE = `${PEOPLE_API_SCOPE} ${DOCS_API_SCOPE}`;
+var DRIVE_METADATA_SCOPE = "https://www.googleapis.com/auth/drive.metadata.readonly";
+var OAUTH_SCOPE = `${PEOPLE_API_SCOPE} ${DOCS_API_SCOPE} ${DRIVE_METADATA_SCOPE}`;
 function buildAuthUrl(clientId, redirectUri) {
   const params = new URLSearchParams({
     client_id: clientId,
@@ -231,31 +258,64 @@ async function resolveAuthorNames(accessToken, authorIds, fetchImpl = fetch) {
   const res = await fetchImpl(`https://people.googleapis.com/v1/people:batchGet?${params.toString()}`, {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
-  if (!res.ok) {
-    throw new Error(`People API batchGet failed: ${res.status}`);
-  }
+  if (!res.ok) throw new Error(`People API batchGet failed: ${res.status}`);
   const body = await res.json();
   return parseBatchGetResponse(authorIds, body);
 }
-
-// src/shared/doc-id.ts
-function extractDocId(url) {
-  const match = url.match(/\/document\/(?:u\/\d+\/)?d\/([^/]+)\//);
-  return match ? match[1] : null;
+var DriveApiError = class extends Error {
+};
+var DRIVE_FIELDS = "permissions(id,displayName,emailAddress,type)";
+function filePermissionsUrl(fileId) {
+  return `https://www.googleapis.com/drive/v3/files/${fileId}/permissions?fields=${encodeURIComponent(DRIVE_FIELDS)}`;
+}
+async function fetchFilePermissions(fileId, accessToken, fetchImpl = fetch) {
+  const res = await fetchImpl(filePermissionsUrl(fileId), { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) throw new DriveApiError(`Drive API permissions.list failed: ${res.status}`);
+  const body = await res.json();
+  return body.permissions ?? [];
+}
+function matchPermissionsToAuthorIds(authorIds, permissions) {
+  console.log(`[GroupSync drive] ${permissions.length} permission(s) to match against ${authorIds.length} author id(s)`);
+  const byStringId = /* @__PURE__ */ new Map();
+  for (const perm of permissions) {
+    if (perm.id) byStringId.set(perm.id, perm);
+  }
+  const permsByBigInt = /* @__PURE__ */ new Map();
+  for (const [id, perm] of byStringId) {
+    try {
+      permsByBigInt.set(BigInt(id), perm);
+    } catch {
+    }
+  }
+  return authorIds.map((authorId) => {
+    let matched = byStringId.get(authorId);
+    if (!matched) {
+      try {
+        matched = permsByBigInt.get(BigInt(authorId));
+      } catch {
+      }
+    }
+    const displayName = matched?.displayName ?? matched?.emailAddress ?? null;
+    console.log(`[GroupSync drive] authorId=${authorId} matched=${matched?.id ?? "none"} -> "${displayName ?? "null"}"`);
+    return { authorId, displayName };
+  });
+}
+async function resolveAuthorNamesViaDrive(fileId, accessToken, authorIds, fetchImpl = fetch) {
+  if (authorIds.length === 0) return [];
+  const permissions = await fetchFilePermissions(fileId, accessToken, fetchImpl);
+  return matchPermissionsToAuthorIds(authorIds, permissions);
 }
 
-// src/structure/docs-api.ts
+// src/structure/index.ts
 var DocsApiError = class extends Error {
 };
-var FIELDS = "body.content(startIndex,endIndex,paragraph.paragraphStyle.namedStyleType,table.rows,table.columns)";
+var DOCS_API_FIELDS = "body.content(startIndex,endIndex,paragraph.paragraphStyle.namedStyleType,table.rows,table.columns)";
 function documentsApiUrl(documentId) {
-  return `https://docs.googleapis.com/v1/documents/${documentId}?fields=${encodeURIComponent(FIELDS)}`;
+  return `https://docs.googleapis.com/v1/documents/${documentId}?fields=${encodeURIComponent(DOCS_API_FIELDS)}`;
 }
 async function fetchDocumentStructure(documentId, accessToken, fetchImpl = fetch) {
   const res = await fetchImpl(documentsApiUrl(documentId), { headers: { Authorization: `Bearer ${accessToken}` } });
-  if (!res.ok) {
-    throw new DocsApiError(`Docs API documents.get failed: ${res.status}`);
-  }
+  if (!res.ok) throw new DocsApiError(`Docs API documents.get failed: ${res.status}`);
   return await res.json();
 }
 var HEADING_LEVELS = {
@@ -277,11 +337,9 @@ function classifyElements(content) {
     if (el.paragraph) {
       const namedStyle = el.paragraph.paragraphStyle?.namedStyleType;
       const level = namedStyle ? HEADING_LEVELS[namedStyle] : void 0;
-      if (level !== void 0) {
-        classified.push({ kind: "heading", level, startIndex: el.startIndex, endIndex: el.endIndex });
-      } else {
-        classified.push({ kind: "paragraph", startIndex: el.startIndex, endIndex: el.endIndex });
-      }
+      classified.push(
+        level !== void 0 ? { kind: "heading", level, startIndex: el.startIndex, endIndex: el.endIndex } : { kind: "paragraph", startIndex: el.startIndex, endIndex: el.endIndex }
+      );
     }
   }
   return classified;
@@ -304,6 +362,12 @@ function sectionsFromHeadings(elements) {
   }
   if (current) ranges.push(current);
   return ranges;
+}
+
+// src/utils.ts
+function extractDocId(url) {
+  const match = url.match(/\/document\/(?:u\/\d+\/)?d\/([^/]+)\//);
+  return match ? match[1] : null;
 }
 
 // src/background/index.ts
@@ -393,8 +457,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const docId = message.docId;
     (async () => {
       try {
-        const ops = await fetchFullHistory(docId);
+        const { ops, names } = await fetchFullHistory(docId);
         await replaceOps(docId, ops);
+        if (Object.keys(names).length > 0) {
+          const stored = await getStoredNames(docId);
+          await chrome.storage.session.set({ [namesStorageKey(docId)]: { ...names, ...stored } });
+          console.log(`[GroupSync background] stored ${Object.keys(names).length} name(s) from history response`);
+        }
         console.log(`[GroupSync background] retroactive history fetch for ${docId} -> ${ops.length} op(s)`);
         sendResponse({ ok: true, count: ops.length });
       } catch (err) {
@@ -409,20 +478,53 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     getStoredNames(docId).then((names) => sendResponse({ names }));
     return true;
   }
+  if (message?.type === "groupsync-save-names") {
+    const docId = message.docId;
+    const updates = message.names;
+    (async () => {
+      const existing = await getStoredNames(docId);
+      await chrome.storage.session.set({ [namesStorageKey(docId)]: { ...existing, ...updates } });
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
   if (message?.type === "groupsync-resolve-names") {
     const docId = message.docId;
     (async () => {
       try {
         const ops = await getStoredOps(docId);
         const authorIds = Array.from(new Set(ops.map((op) => op.authorId)));
+        console.log(`[GroupSync names] starting resolution for ${docId}, ${authorIds.length} author id(s):`, authorIds);
         const accessToken = await getAccessToken(GOOGLE_OAUTH_CLIENT_ID);
-        const results = await resolveAuthorNames(accessToken, authorIds);
-        const names = Object.fromEntries(results.map((r) => [r.authorId, r.displayName]));
+        console.log(`[GroupSync names] got access token, length=${accessToken.length}`);
+        let peopleResults;
+        try {
+          peopleResults = await resolveAuthorNames(accessToken, authorIds);
+          console.log("[GroupSync names] People API results:", peopleResults);
+        } catch (err) {
+          console.error("[GroupSync names] People API call itself threw \u2014 Drive fallback will still run", err);
+          peopleResults = authorIds.map((authorId) => ({ authorId, displayName: null }));
+        }
+        const stillUnresolved = peopleResults.filter((r) => r.displayName === null).map((r) => r.authorId);
+        console.log(`[GroupSync names] still unresolved after People API: ${stillUnresolved.length}`, stillUnresolved);
+        let driveResults = [];
+        if (stillUnresolved.length > 0) {
+          try {
+            driveResults = await resolveAuthorNamesViaDrive(docId, accessToken, stillUnresolved);
+            console.log("[GroupSync names] Drive permissions fallback results:", driveResults);
+          } catch (err) {
+            console.error("[GroupSync names] Drive permissions fallback failed", err);
+          }
+        }
+        const driveByAuthorId = new Map(driveResults.map((r) => [r.authorId, r]));
+        const merged = peopleResults.map((r) => r.displayName !== null ? r : driveByAuthorId.get(r.authorId) ?? r);
+        const names = Object.fromEntries(merged.map((r) => [r.authorId, r.displayName]));
         await chrome.storage.session.set({ [namesStorageKey(docId)]: names });
-        console.log(`[GroupSync background] resolved names for ${docId}:`, names);
-        sendResponse({ ok: true, names });
+        const resolvedCount = merged.filter((r) => r.displayName !== null).length;
+        console.log(`[GroupSync names] FINAL: resolved ${resolvedCount}/${merged.length} name(s) for ${docId}:`, names);
+        sendResponse({ ok: true, names, resolvedCount, totalCount: merged.length });
       } catch (err) {
-        console.error("[GroupSync background] name resolution failed", docId, err);
+        console.error("[GroupSync names] name resolution failed outright", docId, err);
         sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
       }
     })();

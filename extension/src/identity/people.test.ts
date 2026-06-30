@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildAuthUrl, extractAccessToken, OAUTH_SCOPE, parseBatchGetResponse, resolveAuthorNames } from "./people";
+import { buildAuthUrl, extractAccessToken, OAUTH_SCOPE, parseBatchGetResponse, resolveAuthorNames } from ".";
 
 describe("buildAuthUrl", () => {
-  it("builds an implicit-grant auth URL requesting both the contacts and Docs API scopes in one consent flow", () => {
+  it("builds an implicit-grant auth URL requesting the contacts, Docs API, and Drive metadata scopes in one consent flow", () => {
     const url = new URL(buildAuthUrl("client-1", "https://abc.chromiumapp.org/"));
     expect(url.origin + url.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
     expect(url.searchParams.get("client_id")).toBe("client-1");
@@ -11,6 +11,7 @@ describe("buildAuthUrl", () => {
     expect(url.searchParams.get("scope")).toBe(OAUTH_SCOPE);
     expect(OAUTH_SCOPE).toContain("contacts.readonly");
     expect(OAUTH_SCOPE).toContain("documents.readonly");
+    expect(OAUTH_SCOPE).toContain("drive.metadata.readonly");
   });
 });
 

@@ -32,6 +32,7 @@ export interface CaptureError extends Error {
   reason: "unparseable-bundles" | "no-parseable-chunks";
 }
 
+/** Constructs a typed CaptureError with a machine-readable reason code. */
 function captureError(reason: CaptureError["reason"], message: string): CaptureError {
   const err = new Error(message) as CaptureError;
   err.reason = reason;
@@ -84,6 +85,7 @@ export function parseOutboundSaveRequest(body: RawSaveRequestBody, context: Outb
   return commandsToOps(body.bundles, context);
 }
 
+/** Iterates bundles and flattens all commands into ops, sharing the given author/timestamp context. */
 function commandsToOps(bundles: RawBundle[], context: OutboundCaptureContext): MutationOp[] {
   const ops: MutationOp[] = [];
   for (const bundle of bundles) {
@@ -117,15 +119,13 @@ export function tokenizeChunks(raw: string): string[] {
   return chunks;
 }
 
-/** Parses one [command, clientTimestamp, authorId, rev, ...] change entry
- *  into zero or more ops (zero if the command isn't a content edit — cursor
- *  move, spellcheck styling, etc; more than one if it's an mlti bundle). */
+/** Parses one change entry into ops; returns empty for non-content commands (cursor, spellcheck). */
 function parseChangeEntry(entry: PushChangeEntry): MutationOp[] {
   const [command, timestamp, authorId] = entry as [unknown, number, AuthorId, ...unknown[]];
   return commandToOps(command, authorId, timestamp);
 }
 
-/** Parses one decoded frame [seq, payload] into zero or more ops. */
+/** Parses one push-channel frame into ops; skips noops and selection-only broadcasts. */
 function parseFrame(frame: PushFrame): MutationOp[] {
   const [, payload] = frame;
   if (isNoopPayload(payload)) return [];

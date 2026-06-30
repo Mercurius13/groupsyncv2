@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { replay } from "../replay";
 import type { MutationLog } from "../types/mutation";
-import { segmentByDocsStructure, segmentIntoParagraphs } from "./index";
+import { segmentByDocsStructure, sectionHeadingText, segmentIntoParagraphs } from "./index";
 
 describe("segmentIntoParagraphs", () => {
   it("splits into one section per paragraph, each including its trailing newline", () => {
@@ -96,5 +96,28 @@ describe("segmentByDocsStructure (F5.1-F5.4)", () => {
 
   it("returns nothing for an empty range list", () => {
     expect(segmentByDocsStructure([], [])).toEqual([]);
+  });
+});
+
+describe("sectionHeadingText (HANDOVER.md C1 scoped exception, 2026-06-29)", () => {
+  it("extracts the heading line's text for a section with a real heading", () => {
+    const ops: MutationLog = [{ type: "insert", authorId: "A", timestamp: 1, position: 0, text: "Executive Summary\nbody text" }];
+    const { originByPosition } = replay(ops);
+    const [section] = segmentByDocsStructure(originByPosition, [
+      { startIndex: 0, endIndex: 28, headingLevel: 1, containsTable: false },
+    ]);
+    expect(sectionHeadingText(section!)).toBe("Executive Summary");
+  });
+
+  it("returns null for a section with no heading (newline-only fallback)", () => {
+    const ops: MutationLog = [{ type: "insert", authorId: "A", timestamp: 1, position: 0, text: "hello\n" }];
+    const { originByPosition } = replay(ops);
+    const [section] = segmentIntoParagraphs(originByPosition);
+    expect(sectionHeadingText(section!)).toBeNull();
+  });
+
+  it("returns null rather than an empty string for a heading-flagged section with blank text", () => {
+    const section = { start: 0, end: 0, text: "", authorship: new Map(), headingLevel: 1 };
+    expect(sectionHeadingText(section)).toBeNull();
   });
 });

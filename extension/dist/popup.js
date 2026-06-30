@@ -1,21 +1,22 @@
 // src/export/index.ts
-function toContentStrippedSummary(narration, footprints, now = Date.now) {
+function toContentStrippedSummary(narration, footprints, names = {}, now = Date.now) {
   return {
     disclaimer: narration.disclaimer,
     generatedAt: now(),
-    sections: narration.sections.filter((s) => s.sentences.length > 0).map((s) => ({ sectionLabel: `Paragraph ${s.paragraph}`, sentences: s.sentences.map((sentence) => sentence.text) })),
+    sections: narration.sections.filter((s) => s.sentences.length > 0).map((s) => ({
+      sectionLabel: s.headingText ?? `Paragraph ${s.paragraph}`,
+      sentences: s.sentences.map((sentence) => sentence.text)
+    })),
     signalNotes: narration.signalNotes,
     authorCounts: footprints.map((f) => ({
       authorId: f.authorId,
+      authorName: names[f.authorId] ?? null,
       originatedChars: f.originatedChars,
       totalSurvivingChars: f.totalSurvivingChars,
       originShare: f.originShare
     }))
   };
 }
-
-// src/shared/disclaimer.ts
-var DISCLAIMER = "This tool measures on-document editing only. It cannot detect off-document work, in-person contribution, or content drafted elsewhere and pasted in. Use as evidence, not as a verdict.";
 
 // src/signals/index.ts
 var PASTE_CHAR_THRESHOLD = 400;
@@ -176,25 +177,102 @@ function detectConcurrentEditBoundaries(ops) {
   }
   return signals;
 }
-function normalizeRosterName(name) {
-  return name.trim().toLowerCase();
+
+// src/replay/index.ts
+function padToLength(live, length, nextCharId) {
+  while (live.length < length) {
+    live.push({ charId: nextCharId(), authorId: null, char: null });
+  }
 }
-function detectNonRosterAuthorship(expectedRoster, footprints, names) {
-  if (expectedRoster.length === 0) return [];
-  const expected = new Set(expectedRoster.map(normalizeRosterName));
-  return footprints.filter((f) => {
-    const resolved = names[f.authorId];
-    return !resolved || !expected.has(normalizeRosterName(resolved));
-  }).map((f) => ({ authorId: f.authorId, originatedChars: f.originatedChars }));
+function replay(ops) {
+  const live = [];
+  const deletionLog = [];
+  let counter = 0;
+  const nextCharId = () => counter++;
+  for (const op of ops) {
+    if (op.type === "insert") {
+      padToLength(live, op.position, nextCharId);
+      const inserted = Array.from(op.text, (char) => ({
+        charId: nextCharId(),
+        authorId: op.authorId,
+        char
+      }));
+      live.splice(op.position, 0, ...inserted);
+    } else {
+      padToLength(live, op.range.end, nextCharId);
+      const removed = live.splice(op.range.start, op.range.end - op.range.start);
+      removed.forEach((char, offset) => {
+        deletionLog.push({
+          actor: op.authorId,
+          target: char.authorId,
+          charId: char.charId,
+          timestamp: op.timestamp,
+          position: op.range.start + offset
+        });
+      });
+    }
+  }
+  return { originByPosition: live, deletionLog };
 }
-function detectMissingRosterMembers(expectedRoster, footprints, names) {
-  const detected = new Set(
-    footprints.map((f) => names[f.authorId]).filter((n) => !!n).map(normalizeRosterName)
-  );
-  return expectedRoster.filter((expected) => !detected.has(normalizeRosterName(expected)));
+function survivingCharacterMap(originByPosition) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const char of originByPosition) {
+    counts.set(char.authorId, (counts.get(char.authorId) ?? 0) + 1);
+  }
+  return counts;
+}
+function deletionOverwriteMap(deletionLog) {
+  const matrix = /* @__PURE__ */ new Map();
+  for (const event of deletionLog) {
+    let targets = matrix.get(event.actor);
+    if (!targets) {
+      targets = /* @__PURE__ */ new Map();
+      matrix.set(event.actor, targets);
+    }
+    targets.set(event.target, (targets.get(event.target) ?? 0) + 1);
+  }
+  return matrix;
+}
+
+// src/structure/index.ts
+function classifyForm(range) {
+  return range.containsTable ? "calculations" : "discussion/theory";
+}
+var UNKNOWN_CHAR_PLACEHOLDER = "\uFFFD";
+function reconstructText(chars) {
+  return chars.map((c) => c.char ?? UNKNOWN_CHAR_PLACEHOLDER).join("");
+}
+function buildSection(chars, start, end) {
+  const slice = chars.slice(start, end);
+  return { start, end, text: reconstructText(slice), authorship: survivingCharacterMap(slice) };
+}
+function segmentIntoParagraphs(chars) {
+  const sections = [];
+  let start = 0;
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i]?.char === "\n") {
+      sections.push(buildSection(chars, start, i + 1));
+      start = i + 1;
+    }
+  }
+  if (start < chars.length) sections.push(buildSection(chars, start, chars.length));
+  return sections;
+}
+function segmentByDocsStructure(chars, ranges) {
+  return ranges.map((range) => {
+    const start = Math.min(range.startIndex, chars.length);
+    const end = Math.min(range.endIndex, chars.length);
+    return { ...buildSection(chars, start, end), headingLevel: range.headingLevel, formClassification: classifyForm(range) };
+  });
+}
+function sectionHeadingText(section) {
+  if (section.headingLevel === null || section.headingLevel === void 0) return null;
+  const firstLine = section.text.split("\n")[0]?.trim();
+  return firstLine ? firstLine : null;
 }
 
 // src/narration/index.ts
+var DISCLAIMER = "This tool measures on-document editing only. It cannot detect off-document work, in-person contribution, or content drafted elsewhere and pasted in. Use as evidence, not as a verdict.";
 function pct(share) {
   return `${Math.round(share * 100)}%`;
 }
@@ -269,23 +347,12 @@ function narrateConcurrentEdit(signal, names) {
     text: `${authorLabel(signal.authorA, names)} and ${authorLabel(signal.authorB, names)} both inserted text within ${Math.abs(signal.timestampB - signal.timestampA)}ms of each other near the same position in the document \u2014 attribution at this boundary may be less certain than elsewhere (concurrent editing).`
   };
 }
-function narrateNonRosterAuthorship(signal, names) {
-  return {
-    ruleId: "F4.2-non-roster-authorship",
-    text: `${signal.originatedChars} surviving characters are attributed to ${authorLabel(signal.authorId, names)}, who doesn't match any name on the expected roster \u2014 possibly unmodified template/boilerplate text, or a contributor outside the group.`
-  };
-}
-function narrateMissingRosterMember(expectedName) {
-  return {
-    ruleId: "F7.5-missing-roster-member",
-    text: `No edits were detected for "${expectedName}" anywhere in the captured history. This may mean they did no on-document work, worked under an unresolved or different account, or their name didn't match how it resolved elsewhere \u2014 the data cannot distinguish these.`
-  };
-}
 function buildNarrationReport(inputs) {
   const { names } = inputs;
   const sections = inputs.sections.map((section, i) => ({
     paragraph: i + 1,
-    sentences: narrateSection(section, names)
+    sentences: narrateSection(section, names),
+    headingText: sectionHeadingText(section)
   }));
   const signalSentences = [
     ...inputs.footprints.map((f) => narrateIntegratorPattern(f, names)).filter((s) => s !== null),
@@ -293,9 +360,7 @@ function buildNarrationReport(inputs) {
     ...inputs.quarantineSignals.map((q) => narrateQuarantine(q)),
     ...inputs.lateConcentration.map((l) => narrateLateConcentration(l, names)),
     ...inputs.revisionDepth.map((r) => narrateRevisionDepth(r, names)),
-    ...inputs.concurrentEdits.map((c) => narrateConcurrentEdit(c, names)),
-    ...inputs.nonRosterAuthors.map((n) => narrateNonRosterAuthorship(n, names)),
-    ...inputs.missingRosterMembers.map((m) => narrateMissingRosterMember(m))
+    ...inputs.concurrentEdits.map((c) => narrateConcurrentEdit(c, names))
   ];
   return {
     disclaimer: DISCLAIMER,
@@ -306,108 +371,10 @@ function buildNarrationReport(inputs) {
   };
 }
 
-// src/replay/index.ts
-function padToLength(live, length, nextCharId) {
-  while (live.length < length) {
-    live.push({ charId: nextCharId(), authorId: null, char: null });
-  }
-}
-function replay(ops) {
-  const live = [];
-  const deletionLog = [];
-  let counter = 0;
-  const nextCharId = () => counter++;
-  for (const op of ops) {
-    if (op.type === "insert") {
-      padToLength(live, op.position, nextCharId);
-      const inserted = Array.from(op.text, (char) => ({
-        charId: nextCharId(),
-        authorId: op.authorId,
-        char
-      }));
-      live.splice(op.position, 0, ...inserted);
-    } else {
-      padToLength(live, op.range.end, nextCharId);
-      const removed = live.splice(op.range.start, op.range.end - op.range.start);
-      removed.forEach((char, offset) => {
-        deletionLog.push({
-          actor: op.authorId,
-          target: char.authorId,
-          charId: char.charId,
-          timestamp: op.timestamp,
-          position: op.range.start + offset
-        });
-      });
-    }
-  }
-  return { originByPosition: live, deletionLog };
-}
-function survivingCharacterMap(originByPosition) {
-  const counts = /* @__PURE__ */ new Map();
-  for (const char of originByPosition) {
-    counts.set(char.authorId, (counts.get(char.authorId) ?? 0) + 1);
-  }
-  return counts;
-}
-function deletionOverwriteMap(deletionLog) {
-  const matrix = /* @__PURE__ */ new Map();
-  for (const event of deletionLog) {
-    let targets = matrix.get(event.actor);
-    if (!targets) {
-      targets = /* @__PURE__ */ new Map();
-      matrix.set(event.actor, targets);
-    }
-    targets.set(event.target, (targets.get(event.target) ?? 0) + 1);
-  }
-  return matrix;
-}
-
-// src/shared/doc-id.ts
+// src/utils.ts
 function extractDocId(url) {
   const match = url.match(/\/document\/(?:u\/\d+\/)?d\/([^/]+)\//);
   return match ? match[1] : null;
-}
-
-// src/structure/docs-api.ts
-function classifyForm(range) {
-  return range.containsTable ? "calculations" : "discussion/theory";
-}
-
-// src/structure/index.ts
-var UNKNOWN_CHAR_PLACEHOLDER = "\uFFFD";
-function reconstructText(chars) {
-  return chars.map((c) => c.char ?? UNKNOWN_CHAR_PLACEHOLDER).join("");
-}
-function segmentIntoParagraphs(chars) {
-  const sections = [];
-  let start = 0;
-  for (let i = 0; i < chars.length; i++) {
-    if (chars[i]?.char === "\n") {
-      sections.push(buildSection(chars, start, i + 1));
-      start = i + 1;
-    }
-  }
-  if (start < chars.length) {
-    sections.push(buildSection(chars, start, chars.length));
-  }
-  return sections;
-}
-function buildSection(chars, start, end) {
-  const slice = chars.slice(start, end);
-  return {
-    start,
-    end,
-    text: reconstructText(slice),
-    authorship: survivingCharacterMap(slice)
-  };
-}
-function segmentByDocsStructure(chars, ranges) {
-  return ranges.map((range) => {
-    const start = Math.min(range.startIndex, chars.length);
-    const end = Math.min(range.endIndex, chars.length);
-    const section = buildSection(chars, start, end);
-    return { ...section, headingLevel: range.headingLevel, formClassification: classifyForm(range) };
-  });
 }
 
 // src/ui/popup.ts
@@ -432,39 +399,10 @@ function mapToObject(map, names) {
   for (const [key, value] of map) obj[labelKey(key, names)] = value;
   return obj;
 }
-function rosterStorageKey(docId) {
-  return `groupsync-roster-${docId}`;
-}
-async function getStoredRoster(docId) {
-  const key = rosterStorageKey(docId);
-  const result = await chrome.storage.session.get(key);
-  return result[key] ?? [];
-}
-function parseRosterInput(value) {
-  return value.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
-}
-function renderRosterInput(root, docId, currentRoster) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "gs-roster-input";
-  const label = document.createElement("label");
-  label.textContent = "Expected group members (one name per line, as resolved by People API):";
-  const textarea = document.createElement("textarea");
-  textarea.rows = 4;
-  textarea.value = currentRoster.join("\n");
-  const button = document.createElement("button");
-  button.className = "gs-button";
-  button.textContent = "Save expected roster";
-  button.addEventListener("click", async () => {
-    await chrome.storage.session.set({ [rosterStorageKey(docId)]: parseRosterInput(textarea.value) });
-    await render(root, docId);
-  });
-  wrapper.append(label, textarea, button);
-  root.prepend(wrapper);
-}
 function renderResolveNamesButton(root, docId) {
   const button = document.createElement("button");
   button.className = "gs-button";
-  button.textContent = "Resolve author names (People API)";
+  button.textContent = "Resolve author names (People API + Drive permissions fallback)";
   button.addEventListener("click", async () => {
     button.disabled = true;
     button.textContent = "Resolving names\u2026";
@@ -473,9 +411,63 @@ function renderResolveNamesButton(root, docId) {
       setStatus(root, `Name resolution failed: ${result?.error ?? "unknown error"}`);
       return;
     }
+    if (result.resolvedCount === 0 && result.totalCount > 0) {
+      setStatus(
+        root,
+        `Resolved 0 of ${result.totalCount} author name(s) via People API or Drive permissions. This can happen if you don't have edit access to the doc, or no author IDs were captured yet.`
+      );
+      return;
+    }
     await render(root, docId);
   });
   root.prepend(button);
+}
+function renderNameLabelingSection(root, docId, rawSurviving, names) {
+  const unresolved = Array.from(rawSurviving.keys()).filter((id) => id !== null && !names[id]).sort((a, b) => (rawSurviving.get(b) ?? 0) - (rawSurviving.get(a) ?? 0));
+  if (unresolved.length === 0) return;
+  const section = document.createElement("div");
+  section.className = "gs-name-labeling";
+  const heading = document.createElement("p");
+  heading.innerHTML = `<strong>Label authors</strong> \u2014 ${unresolved.length} ID(s) couldn't be resolved automatically. Enter names to use them throughout the analysis.`;
+  section.appendChild(heading);
+  const inputs = /* @__PURE__ */ new Map();
+  for (const authorId of unresolved) {
+    const charCount = rawSurviving.get(authorId) ?? 0;
+    const row = document.createElement("div");
+    row.className = "gs-name-row";
+    const label = document.createElement("span");
+    label.className = "gs-author-id";
+    label.textContent = `${charCount} chars \u2014 ${authorId}`;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "Enter name\u2026";
+    input.className = "gs-name-input";
+    inputs.set(authorId, input);
+    row.appendChild(label);
+    row.appendChild(input);
+    section.appendChild(row);
+  }
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "gs-button";
+  saveBtn.textContent = "Save names";
+  saveBtn.addEventListener("click", async () => {
+    const updates = {};
+    let hasAny = false;
+    for (const [id, input] of inputs) {
+      const val = input.value.trim();
+      if (val) {
+        updates[id] = val;
+        hasAny = true;
+      }
+    }
+    if (!hasAny) return;
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Saving\u2026";
+    await chrome.runtime.sendMessage({ type: "groupsync-save-names", docId, names: updates });
+    await render(root, docId);
+  });
+  section.appendChild(saveBtn);
+  root.prepend(section);
 }
 function renderFetchStructureButton(root, docId) {
   const button = document.createElement("button");
@@ -526,7 +518,10 @@ function sentenceLi(sentence) {
   return `<li>${escapeHtml(sentence.text)} <span class="gs-rule-id">[${escapeHtml(sentence.ruleId)}]</span></li>`;
 }
 function renderNarration(narration) {
-  const sectionsHtml = narration.sections.filter((s) => s.sentences.length > 0).map((s) => `<div class="gs-section"><strong>\xB6${s.paragraph}</strong><ul>${s.sentences.map(sentenceLi).join("")}</ul></div>`).join("");
+  const sectionsHtml = narration.sections.filter((s) => s.sentences.length > 0).map((s) => {
+    const label = s.headingText ? `\xB6${s.paragraph} \u2014 ${escapeHtml(s.headingText)}` : `\xB6${s.paragraph}`;
+    return `<div class="gs-section"><strong>${label}</strong><ul>${s.sentences.map(sentenceLi).join("")}</ul></div>`;
+  }).join("");
   const signalsHtml = narration.signalSentences.length ? `<div class="gs-section"><strong>Signals</strong><ul>${narration.signalSentences.map(sentenceLi).join("")}</ul></div>` : "";
   return `<p class="gs-disclaimer">${escapeHtml(narration.disclaimer)}</p><div class="gs-narration">${sectionsHtml}${signalsHtml}</div>`;
 }
@@ -548,7 +543,8 @@ async function render(root, docId) {
     return;
   }
   const { originByPosition, deletionLog } = replay(ops);
-  const surviving = mapToObject(survivingCharacterMap(originByPosition), names);
+  const rawSurviving = survivingCharacterMap(originByPosition);
+  const surviving = mapToObject(rawSurviving, names);
   const deletions = Object.fromEntries(
     Array.from(deletionOverwriteMap(deletionLog), ([actor, targets]) => [labelKey(actor, names), mapToObject(targets, names)])
   );
@@ -567,9 +563,6 @@ async function render(root, docId) {
   const rawLateConcentration = detectLateConcentration(ops);
   const rawRevisionDepth = revisionDepthSignals(deletionOverwriteMap(deletionLog));
   const rawConcurrentEdits = detectConcurrentEditBoundaries(ops);
-  const expectedRoster = await getStoredRoster(docId);
-  const rawNonRosterAuthors = detectNonRosterAuthorship(expectedRoster, rawFootprints, names);
-  const missingRosterMembers = detectMissingRosterMembers(expectedRoster, rawFootprints, names);
   const footprints = rawFootprints.map((f) => ({
     author: labelKey(f.authorId, names),
     revisionBreadth: f.revisionBreadth,
@@ -594,22 +587,18 @@ async function render(root, docId) {
     authorA: labelKey(c.authorA, names),
     authorB: labelKey(c.authorB, names)
   }));
-  const nonRosterAuthors = rawNonRosterAuthors.map((n) => ({ ...n, authorId: labelKey(n.authorId, names) }));
   const debugData = {
     opsCaptured: ops.length,
     structureSource: usingDocsStructure ? "Docs API (headings/tables)" : "newline-only paragraphs (fallback)",
     survivingCharactersByAuthor: surviving,
     deletionOverwriteByActor: deletions,
-    expectedRoster,
     signals: {
       footprints,
       pastes,
       quarantineSignals,
       lateConcentration,
       revisionDepth,
-      concurrentEdits,
-      nonRosterAuthors,
-      missingRosterMembers
+      concurrentEdits
     }
   };
   const narration = buildNarrationReport({
@@ -620,17 +609,15 @@ async function render(root, docId) {
     lateConcentration: rawLateConcentration,
     revisionDepth: rawRevisionDepth,
     concurrentEdits: rawConcurrentEdits,
-    nonRosterAuthors: rawNonRosterAuthors,
-    missingRosterMembers,
     names
   });
-  const summary = toContentStrippedSummary(narration, rawFootprints);
+  const summary = toContentStrippedSummary(narration, rawFootprints, names);
   root.innerHTML = `<p class="gs-status">Capture + replay + structure + signals + narration (first-draft wording \u2014 see ME.MD). Structure source: ${escapeHtml(debugData.structureSource)}.</p>` + renderNarration(narration) + `<pre class="gs-json">${escapeHtml(JSON.stringify(debugData, null, 2))}</pre>`;
   renderFetchHistoryButton(root, docId);
+  renderNameLabelingSection(root, docId, rawSurviving, names);
   renderResolveNamesButton(root, docId);
   renderFetchStructureButton(root, docId);
   renderExportButton(root, summary);
-  renderRosterInput(root, docId, expectedRoster);
 }
 async function main() {
   const root = document.getElementById("gs-root");

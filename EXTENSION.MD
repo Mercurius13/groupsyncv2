@@ -26,6 +26,21 @@ scope until a dependency exists (F5.5, F8.3):
   requirement (`capture/history.ts`'s retroactive fetch, confirmed against a
   real response) and F1.7's clear-error-on-failure behavior.
 - **F2 (replay)**: fully met.
+- **Identity/name resolution** (no F-number of its own, but real and worth
+  documenting clearly): `identity/people.ts`'s People API call **confirmed
+  broken for the common case 2026-06-29** — a live test completed the OAuth
+  flow successfully but every author name came back null, because People
+  API only resolves the signed-in professor's own contacts/connections, not
+  an arbitrary doc collaborator. Fixed with `identity/drive.ts`: a fallback
+  to the Drive API's file-permissions list (every editor with access to the
+  specific doc, regardless of contacts status), tried for anything People
+  API didn't resolve. Required a new OAuth scope
+  (`drive.metadata.readonly`), a new host_permission, and an explicit
+  addition to HANDOVER.md C1's list of permitted endpoints. **Still
+  unconfirmed**: that a Drive permission's `id` field actually equals the
+  same numeric account ID seen in the collab stream — standard real-world
+  Drive API behavior, not officially documented by Google, not yet checked
+  against a real multi-collaborator doc by this extension (see `ME.MD`).
 - **F3 (quarantine)**: F3.1/F3.3 met via `signals/index.ts`'s
   `detectQuarantineSignals`. F3.2 ("surfaced... as a warning on the affected
   authors' cards") is still only partially met — narration attaches the
@@ -33,12 +48,13 @@ scope until a dependency exists (F5.5, F8.3):
   there's no "card" UI in the extension itself (that's the frontend's job,
   F4 there — `EvidenceViewer.tsx`'s "Signals & flags" block is the closest
   equivalent that exists today).
-- **F4 (paste/template)**: all three met. F4.2 (unmodified-template
-  detection) is implemented via `signals/index.ts`'s
-  `detectNonRosterAuthorship`: content authored by someone who doesn't match
-  the professor's locally-entered expected roster is flagged as possible
-  template/boilerplate or a non-group contributor. Only fires when an
-  expected roster was entered — never guesses without one.
+- **F4 (paste/template)**: F4.1/F4.3 met. **F4.2 (unmodified-template
+  detection) is NOT implemented — removed by decision 2026-06-29.** It was
+  briefly built (`detectNonRosterAuthorship`, comparing against a
+  professor-typed "expected roster" textarea in the popup) but removed: the
+  manual-entry requirement was confusing in practice (it looked related to
+  the unrelated, automatic People-API name resolution) and provided little
+  real value. No replacement input source is currently planned.
 - **F5 (structure)**: F5.1 (Docs API `documents.get`, via
   `structure/docs-api.ts`'s `fetchDocumentStructure`, requesting structural
   metadata fields only — never paragraph text), F5.2 (table/heading
@@ -56,6 +72,15 @@ scope until a dependency exists (F5.5, F8.3):
     `classifyElements` does not descend into paragraph elements, so an
     equation-only paragraph is classified as "discussion/theory," not
     "calculations." Lists are also not distinguished from prose paragraphs.
+  - **Resolved 2026-06-29 — section labels now use real heading text.**
+    Positional-only labels ("Paragraph 47") turned out unusable in practice:
+    a real ~400-paragraph doc gave a professor 400 unlabeled blocks with no
+    way to tell which is which without the source doc open side by side.
+    `structure/index.ts`'s `sectionHeadingText` extracts the heading line
+    itself (never the prose body) and `export/index.ts` uses it as
+    `sectionLabel` when one exists. This required a scoped exception to
+    HANDOVER.md C1 (added 2026-06-29) — short navigational heading text may
+    leave the extension, prose body content still never does.
   - **Unconfirmed, needs live validation** (see `ME.MD`): whether the Docs
     API's `startIndex`/`endIndex` actually align with the character
     positions `is`/`ds` ops use. High-confidence expectation (both are
@@ -71,19 +96,21 @@ scope until a dependency exists (F5.5, F8.3):
   already carries one definite `authorId` per command, so there's no
   positional ambiguity to represent within replay itself. This is the most
   interpretive of the six signals — worth your read in `ME.MD`.
-- **F7 (narration)**: all five met. F7.2 (named rule per sentence) is
+- **F7 (narration)**: F7.1, F7.4 met. F7.2 (named rule per sentence) is
   `narration/index.ts`'s `RuledSentence` type — every sentence everywhere
   carries a `ruleId`, surfaced in the popup's debug view next to the
   rendered text. F7.3's content-aware hedging now activates when Docs API
   structure is available ("this calculations section" / "this
   discussion/theory section"), falling back to neutral "this section" for
-  the newline-only segmenter (which has no form information). F7.5 (empty-
-  signal author gets an explicit statement) is `detectMissingRosterMembers`
-  + `narrateMissingRosterMember` — needs the same locally-entered expected
-  roster as F4.2 (a real backend roster exists now, F3 there, but the
-  extension deliberately does NOT fetch it — C1 only permits Google
-  People/Docs API network calls from the extension, not calls to our own
-  backend; see `ME.MD` for the scope question this raises).
+  the newline-only segmenter (which has no form information). **F7.5 (empty-
+  signal author gets an explicit statement) is NOT implemented — removed by
+  the same 2026-06-29 decision as F4.2** (`detectMissingRosterMembers` +
+  `narrateMissingRosterMember` were built, then removed along with the
+  manual-roster-entry UI). The extension never connects to our own backend
+  in either direction (reaffirmed by decision 2026-06-29 — the backend's
+  role is account/licensing administration, never a data source the
+  extension depends on), so there's currently no input source at all for
+  "who was expected to edit this doc."
 - **F8 (synthetic test suite)**: the per-module vitest suites cover this in
   spirit (121 tests as of 2026-06-29). F8.1 (a dedicated reusable scenario
   generator) and F8.3 (the business-plan doc checked in as a regression
@@ -91,22 +118,27 @@ scope until a dependency exists (F5.5, F8.3):
 
 Remaining Work
 
-1. Live-validate the Docs API index-alignment assumption (F5.1-F5.4) against
+1. Live-validate the Drive-permission-id-equals-author-id assumption
+   (identity/drive.ts) against a real multi-collaborator doc — see `ME.MD`.
+   This is now the load-bearing assumption for name resolution; if it's
+   wrong, no name resolves for non-contacts at all (the original bug, not
+   fixed).
+2. Live-validate the Docs API index-alignment assumption (F5.1-F5.4) against
    a real document — see `ME.MD`.
-2. Decide whether `classifyElements` should descend into paragraph elements
+3. Decide whether `classifyElements` should descend into paragraph elements
    to detect inline equations, and whether lists need their own form/kind
    distinct from prose paragraphs.
-3. F5.5 — surface self-applied section tags (still needs a defined input
-   source — no change from before).
-4. Live-validate the F6.6 concurrent-edit-boundary thresholds
+4. F4.2/F7.5 — both removed 2026-06-29, no replacement planned. If template
+   detection or empty-signal-author reporting becomes worth doing again, it
+   needs a real input source for "who was expected to edit this doc" that
+   isn't a manual popup textarea — the extension-backend boundary stays
+   closed (HANDOVER.md C1), so this would need a genuinely different idea,
+   not a revival of the removed feature.
+5. Live-validate the F6.6 concurrent-edit-boundary thresholds
    (`CONCURRENT_EDIT_WINDOW_MS`, `CONCURRENT_EDIT_POSITION_DISTANCE`) and
    re-read its module docstring's reasoning — this is the signal most likely
    to need a rethink if real concurrent-editing data contradicts the
    "every command already has one definite author" assumption it rests on.
-5. Decide whether the extension should ever read the backend's real roster
-   (F3) instead of requiring the professor to retype it locally for F4.2/F7.5
-   — currently a deliberate C1-driven restriction, not an oversight, but
-   worth revisiting now that a real roster exists server-side.
 6. F8.1/F8.3 — a reusable synthetic-scenario generator, and check in the
    business-plan doc (or a redacted derivative) as a regression fixture.
 

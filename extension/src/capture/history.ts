@@ -36,6 +36,7 @@ export interface HistoryError extends Error {
   reason: "fetch-failed" | "unparseable-response";
 }
 
+/** Constructs a typed HistoryError with a machine-readable reason code. */
 function historyError(reason: HistoryError["reason"], message: string): HistoryError {
   const err = new Error(message) as HistoryError;
   err.reason = reason;
@@ -51,6 +52,7 @@ export function revisionLoadUrl(docId: string, start: number, end: number): stri
   return `https://docs.google.com/document/d/${docId}/revisions/load?id=${docId}&start=${start}&end=${end}`;
 }
 
+/** Returns true if the given revision number exists for this doc (non-ok response = doesn't exist). */
 async function revisionExists(docId: string, rev: number, fetchImpl: typeof fetch): Promise<boolean> {
   const res = await fetchImpl(revisionLoadUrl(docId, rev, rev), { credentials: "include" });
   return res.ok;
@@ -78,33 +80,65 @@ export async function findMaxRevision(docId: string, fetchImpl: typeof fetch = f
  *  confirmed present on every real revisions/load response observed. */
 const XSSI_PREFIX = ")]}'";
 
+/** Strips Google's XSSI-protection prefix (`)]}'`) from a raw response body. */
 function stripXssiPrefix(raw: string): string {
   const trimmed = raw.trimStart();
   return trimmed.startsWith(XSSI_PREFIX) ? trimmed.slice(XSSI_PREFIX.length) : trimmed;
 }
 
+/** A name map extracted from the revision response — keyed by the same
+ *  numeric Gaia ID strings seen in the changelog's authorId field. Google's
+ *  own revision-history UI displays author names, so this data must come
+ *  from somewhere in the response; these are the field names observed or
+ *  plausibly present across different versions of the internal endpoint.
+ *  All are tried; the first non-empty one wins. */
+export type RevisionUserMap = Record<AuthorId, string>;
+
 interface RevisionLoadBody {
   changelog?: unknown[];
+  /** Observed field names for the author-id → display-name map. The exact
+   *  name hasn't been confirmed against a real response yet — we log
+   *  Object.keys(body) at "[GroupSync history]" to surface whatever is
+   *  actually present so it can be pinned down from a real capture. */
+  userMap?: unknown;
+  users?: unknown;
+  authorMap?: unknown;
+  userInfo?: unknown;
 }
 
-/** Converts one changelog entry into ops — same shape and same parsing as
- *  the bind channel's PushChangeEntry (see module docstring). */
+/** Parses one changelog entry (same shape as PushChangeEntry) into zero or more ops. */
 function parseChangelogEntry(entry: unknown): MutationOp[] {
   if (!Array.isArray(entry) || entry.length < 3) return [];
   const [command, timestamp, authorId] = entry as [unknown, number, AuthorId, ...unknown[]];
   return commandToOps(command, authorId, timestamp);
 }
 
-/** Parses one .../revisions/load response into ops, reading only the
- *  `changelog` field (see module docstring — `chunkedSnapshot` is
- *  deliberately ignored, it carries no author/timestamp). A response with
- *  no `changelog` array at all, or one that isn't valid JSON once the XSSI
- *  prefix is stripped, throws — that's a structural break, not normal
- *  variation (unlike the bind channel, there's no streaming/truncation
- *  reason to tolerate a partial parse here: this is one complete HTTP
- *  response, not a long-poll chunk that can legitimately be mid-write). */
-export function parseRevisionLoadResponse(raw: string): MutationOp[] {
-  if (raw.length === 0) return [];
+/** Attempts to parse an author-id → display-name map from the raw body.
+ *  Tries the candidate field names in order; returns an empty object (not
+ *  an error) when none is present — this is purely additive, not required. */
+export function parseUserMapFromBody(body: RevisionLoadBody): RevisionUserMap {
+  const raw = body.userMap ?? body.users ?? body.authorMap ?? body.userInfo;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+
+  const result: RevisionUserMap = {};
+  for (const [id, info] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof info === "string") {
+      result[id] = info;
+    } else if (info && typeof info === "object") {
+      const obj = info as Record<string, unknown>;
+      const name = obj["name"] ?? obj["displayName"] ?? obj["email"] ?? obj["emailAddress"];
+      if (typeof name === "string" && name.length > 0) result[id] = name;
+    }
+  }
+  return result;
+}
+
+/** Parses one .../revisions/load response into ops and an optional author-name map.
+ *  Reads only the `changelog` field (chunkedSnapshot is deliberately ignored — it
+ *  carries no per-command author or timestamp). Throws on unparseable JSON or a
+ *  missing changelog array — both are structural breaks, not normal variation. */
+export function parseRevisionLoadResponseWithNames(raw: string): { ops: MutationOp[]; names: RevisionUserMap } {
+  if (raw.length === 0) return { ops: [], names: {} };
 
   let body: RevisionLoadBody;
   try {
@@ -116,6 +150,8 @@ export function parseRevisionLoadResponse(raw: string): MutationOp[] {
     );
   }
 
+  console.log("[GroupSync history] top-level keys in revisions/load response:", Object.keys(body));
+
   if (!Array.isArray(body.changelog)) {
     throw historyError(
       "unparseable-response",
@@ -123,24 +159,44 @@ export function parseRevisionLoadResponse(raw: string): MutationOp[] {
     );
   }
 
-  return body.changelog.flatMap(parseChangelogEntry);
+  const ops = body.changelog.flatMap(parseChangelogEntry);
+  const names = parseUserMapFromBody(body);
+  if (Object.keys(names).length > 0) {
+    console.log("[GroupSync history] extracted user map from response:", names);
+  } else {
+    console.log("[GroupSync history] no user map found in response (tried: userMap, users, authorMap, userInfo)");
+  }
+  return { ops, names };
+}
+
+/** Convenience wrapper — parses a revisions/load response and returns only the ops. */
+export function parseRevisionLoadResponse(raw: string): MutationOp[] {
+  return parseRevisionLoadResponseWithNames(raw).ops;
 }
 
 /** Fetches and parses the complete mutation log for a doc, oldest revision
- *  first, paginated in REVISIONS_PER_PAGE chunks. This is what background/
- *  index.ts should call to REPLACE (not append to) whatever partial,
- *  live-captured ops it already has for the doc — the retroactive fetch is
- *  the authoritative complete log, per C4. */
-export async function fetchFullHistory(docId: string, fetchImpl: typeof fetch = fetch): Promise<MutationOp[]> {
+ *  first, paginated in REVISIONS_PER_PAGE chunks. Also extracts any
+ *  author-id → name map embedded in the responses (best-effort — empty
+ *  names object if the response doesn't include one). This is what
+ *  background/index.ts should call to REPLACE (not append to) whatever
+ *  partial, live-captured ops it already has for the doc — the retroactive
+ *  fetch is the authoritative complete log, per C4. */
+export async function fetchFullHistory(
+  docId: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<{ ops: MutationOp[]; names: RevisionUserMap }> {
   const maxRev = await findMaxRevision(docId, fetchImpl);
   const ops: MutationOp[] = [];
+  const names: RevisionUserMap = {};
   for (let start = 1; start <= maxRev; start += REVISIONS_PER_PAGE) {
     const end = Math.min(start + REVISIONS_PER_PAGE - 1, maxRev);
     const res = await fetchImpl(revisionLoadUrl(docId, start, end), { credentials: "include" });
     if (!res.ok) {
       throw historyError("fetch-failed", `revisions/load returned ${res.status} for range [${start}, ${end}]`);
     }
-    ops.push(...parseRevisionLoadResponse(await res.text()));
+    const page = parseRevisionLoadResponseWithNames(await res.text());
+    ops.push(...page.ops);
+    Object.assign(names, page.names);
   }
-  return ops;
+  return { ops, names };
 }

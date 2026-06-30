@@ -69,7 +69,6 @@ async def delete_assignment(assignment_id: str, user=Depends(get_current_user)):
     groups = await db.groups.find({"assignment_id": assignment_id}).to_list(None)
     group_ids = [str(g["_id"]) for g in groups]
     if group_ids:
-        await db.roster_members.delete_many({"group_id": {"$in": group_ids}})
         await db.summaries.delete_many({"group_id": {"$in": group_ids}})
     await db.groups.delete_many({"assignment_id": assignment_id})
     await db.disclosure_records.delete_many({"assignment_id": assignment_id})

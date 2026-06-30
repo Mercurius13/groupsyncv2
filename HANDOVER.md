@@ -39,8 +39,29 @@ Raw edit data (the mutation stream and any document content) is processed and
 discarded **inside the extension, on the professor's machine**. It is never
 transmitted to the backend, never persisted in raw form, and never sent to any
 cloud service (this rules out Groq or any cloud LLM). The only network calls the
-extension may make are to Google's own People API and Docs API, carrying IDs and
-structure requests — never keystroke content.
+extension may make are to Google's own People API, Docs API, and (added
+2026-06-29) the Drive API's file-permissions endpoint — carrying IDs and
+structure/metadata requests, never keystroke content. The Drive API addition
+is metadata-only (`drive.metadata.readonly` scope, never file content):
+People API alone doesn't resolve a doc collaborator who isn't a contact of
+the signed-in professor (confirmed live, not just anticipated), so Drive's
+file-permissions list — every editor with access to the specific doc,
+regardless of contacts status — is the fallback name-resolution path. **The
+extension never calls our
+own backend, in either direction** — not to send evidence (that's the
+professor's explicit, opt-in clipboard/paste step into the frontend, F5.2) and
+not to read anything (e.g. roster data) back. This is a deliberate boundary,
+reaffirmed 2026-06-29: the backend's purpose is account/licensing
+administration, not being a data source the extension depends on.
+
+**Scoped exception (added 2026-06-29):** section labels in the exported
+evidence MAY include a document's real heading/title text (e.g. "Executive
+Summary"), not just a positional placeholder ("Paragraph 12") — but ONLY
+short, navigational heading text, never prose body content. This exists
+because purely positional labels made the evidence unusable in practice (no
+way to tell which section is which without the source doc open side by
+side). Everything else in C1 still holds without exception: no prose, no
+keystroke content, no raw mutations, ever.
 
 ### C2 — Authorization model
 Access derives from the **professor's existing Edit permission on the doc plus

@@ -9,8 +9,6 @@ import {
   CONTRIBUTOR_SHARE_THRESHOLD,
   detectConcurrentEditBoundaries,
   detectLateConcentration,
-  detectMissingRosterMembers,
-  detectNonRosterAuthorship,
   detectPastes,
   detectQuarantineSignals,
   groupIntoSessions,
@@ -260,52 +258,3 @@ describe("detectConcurrentEditBoundaries (F6.6)", () => {
   });
 });
 
-describe("detectNonRosterAuthorship (F4.2)", () => {
-  it("returns nothing when no expected roster was entered (never guess)", () => {
-    const ops: MutationLog = [{ type: "insert", authorId: "111", timestamp: 1, position: 0, text: "hi" }];
-    const { originByPosition } = replay(ops);
-    const sections = segmentIntoParagraphs(originByPosition);
-    const footprints = authorFootprints(sections, originByPosition);
-    expect(detectNonRosterAuthorship([], footprints, {})).toEqual([]);
-  });
-
-  it("flags an author whose resolved name doesn't match any expected-roster entry", () => {
-    const ops: MutationLog = [{ type: "insert", authorId: "111", timestamp: 1, position: 0, text: "hi" }];
-    const { originByPosition } = replay(ops);
-    const sections = segmentIntoParagraphs(originByPosition);
-    const footprints = authorFootprints(sections, originByPosition);
-    const names = { "111": "Professor Smith" };
-    expect(detectNonRosterAuthorship(["Ada Lovelace", "Grace Hopper"], footprints, names)).toEqual([
-      { authorId: "111", originatedChars: 2 },
-    ]);
-  });
-
-  it("does not flag an author whose resolved name matches, case/whitespace-insensitively", () => {
-    const ops: MutationLog = [{ type: "insert", authorId: "111", timestamp: 1, position: 0, text: "hi" }];
-    const { originByPosition } = replay(ops);
-    const sections = segmentIntoParagraphs(originByPosition);
-    const footprints = authorFootprints(sections, originByPosition);
-    const names = { "111": "  ADA lovelace  " };
-    expect(detectNonRosterAuthorship(["Ada Lovelace"], footprints, names)).toEqual([]);
-  });
-});
-
-describe("detectMissingRosterMembers (F7.5)", () => {
-  it("flags an expected-roster entry with zero detected edits", () => {
-    const ops: MutationLog = [{ type: "insert", authorId: "111", timestamp: 1, position: 0, text: "hi" }];
-    const { originByPosition } = replay(ops);
-    const sections = segmentIntoParagraphs(originByPosition);
-    const footprints = authorFootprints(sections, originByPosition);
-    const names = { "111": "Ada Lovelace" };
-    expect(detectMissingRosterMembers(["Ada Lovelace", "Grace Hopper"], footprints, names)).toEqual(["Grace Hopper"]);
-  });
-
-  it("returns nothing when every expected member has detected edits", () => {
-    const ops: MutationLog = [{ type: "insert", authorId: "111", timestamp: 1, position: 0, text: "hi" }];
-    const { originByPosition } = replay(ops);
-    const sections = segmentIntoParagraphs(originByPosition);
-    const footprints = authorFootprints(sections, originByPosition);
-    const names = { "111": "Ada Lovelace" };
-    expect(detectMissingRosterMembers(["Ada Lovelace"], footprints, names)).toEqual([]);
-  });
-});

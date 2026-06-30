@@ -59,7 +59,9 @@ async def callback(code: str):
     name: str = info["name"]
 
     # F1.4: professors only — every account created here is a professor.
-    # Students are roster entries (see routers/roster.py), never users.
+    # The backend never stores actual student identities (decided
+    # 2026-06-29) — groups.py tracks only an expected_size count for
+    # license-seat purposes; name resolution happens in the extension.
     existing = await db.professors.find_one({"google_id": google_id})
     if not existing:
         await db.professors.insert_one({

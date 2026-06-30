@@ -89,6 +89,7 @@ export function AssignmentPage() {
             {groups.map((g) => (
               <li key={g.id}>
                 <Link to={`/classes/${classId}/assignments/${assignmentId}/groups/${g.id}`}>{g.name}</Link>
+                {g.expected_size != null && <span className="muted"> — expected size {g.expected_size}</span>}
               </li>
             ))}
           </ul>

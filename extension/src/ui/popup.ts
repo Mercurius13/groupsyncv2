@@ -5,16 +5,13 @@ import {
   authorFootprints,
   detectConcurrentEditBoundaries,
   detectLateConcentration,
-  detectMissingRosterMembers,
-  detectNonRosterAuthorship,
   detectPastes,
   detectQuarantineSignals,
   narrationPhraseForShare,
   revisionDepthSignals,
 } from "../signals";
-import { extractDocId } from "../shared/doc-id";
-import { segmentByDocsStructure, segmentIntoParagraphs, type Section } from "../structure";
-import type { HeadingDelimitedRange } from "../structure/docs-api";
+import { segmentByDocsStructure, segmentIntoParagraphs, type HeadingDelimitedRange, type Section } from "../structure";
+import { extractDocId } from "../utils";
 import type { AuthorId, MutationOp } from "../types/mutation";
 
 /**
@@ -25,81 +22,41 @@ import type { AuthorId, MutationOp } from "../types/mutation";
  * draft pending review (see ME.MD), not finalized.
  */
 
+/** Escapes HTML special chars to prevent injection when building innerHTML strings. */
 function escapeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Returns the Google Doc ID from the active tab URL, or null if the active tab isn't a Google Doc. */
 async function getActiveDocId(): Promise<string | null> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.url) return null;
   return extractDocId(tab.url);
 }
 
+/** Replaces root's content with a single status paragraph. */
 function setStatus(root: HTMLElement, message: string): void {
   root.innerHTML = `<p class="gs-status">${escapeHtml(message)}</p>`;
 }
 
-/** Labels a key with its resolved name when known — never invents one when
- *  unresolved, just falls back to the raw id (or "(unknown)" for a null
- *  origin-author, meaning the capture window started after that character
- *  was written; see replay/index.ts). */
+/** Returns "Name (id)" when resolved, the raw id when not, or "(unknown)" for null-origin characters. */
 function labelKey(key: string | null, names: Record<AuthorId, string | null>): string {
   if (key === null) return "(unknown)";
   const name = names[key];
   return name ? `${name} (${key})` : key;
 }
 
+/** Converts a Map to a plain object, applying labelKey to all keys for display. */
 function mapToObject<K extends string | null, V>(map: Map<K, V>, names: Record<AuthorId, string | null>): Record<string, V> {
   const obj: Record<string, V> = {};
   for (const [key, value] of map) obj[labelKey(key, names)] = value;
   return obj;
 }
 
-/** F4.2/F7.5's expected roster: typed locally by the professor, stored in
- *  chrome.storage.session (same place ops/names live), NEVER fetched over
- *  the network — C1 only permits Google People/Docs API calls, not calls to
- *  our own backend, even though the backend now has a real roster (see
- *  ME.MD: that's a deliberate, not-yet-made scope decision, not an oversight). */
-function rosterStorageKey(docId: string): string {
-  return `groupsync-roster-${docId}`;
-}
-
-async function getStoredRoster(docId: string): Promise<string[]> {
-  const key = rosterStorageKey(docId);
-  const result = await chrome.storage.session.get(key);
-  return (result[key] as string[] | undefined) ?? [];
-}
-
-function parseRosterInput(value: string): string[] {
-  return value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-}
-
-function renderRosterInput(root: HTMLElement, docId: string, currentRoster: string[]): void {
-  const wrapper = document.createElement("div");
-  wrapper.className = "gs-roster-input";
-  const label = document.createElement("label");
-  label.textContent = "Expected group members (one name per line, as resolved by People API):";
-  const textarea = document.createElement("textarea");
-  textarea.rows = 4;
-  textarea.value = currentRoster.join("\n");
-  const button = document.createElement("button");
-  button.className = "gs-button";
-  button.textContent = "Save expected roster";
-  button.addEventListener("click", async () => {
-    await chrome.storage.session.set({ [rosterStorageKey(docId)]: parseRosterInput(textarea.value) });
-    await render(root, docId);
-  });
-  wrapper.append(label, textarea, button);
-  root.prepend(wrapper);
-}
-
 function renderResolveNamesButton(root: HTMLElement, docId: string): void {
   const button = document.createElement("button");
   button.className = "gs-button";
-  button.textContent = "Resolve author names (People API)";
+  button.textContent = "Resolve author names (People API + Drive permissions fallback)";
   button.addEventListener("click", async () => {
     button.disabled = true;
     button.textContent = "Resolving names…";
@@ -108,9 +65,83 @@ function renderResolveNamesButton(root: HTMLElement, docId: string): void {
       setStatus(root, `Name resolution failed: ${result?.error ?? "unknown error"}`);
       return;
     }
+    // Always visible feedback, even when 0 resolved — "did nothing" was a
+    // real complaint when this silently re-rendered with all-null names.
+    if (result.resolvedCount === 0 && result.totalCount > 0) {
+      setStatus(
+        root,
+        `Resolved 0 of ${result.totalCount} author name(s) via People API or Drive permissions. ` +
+          `This can happen if you don't have edit access to the doc, or no author IDs were captured yet.`
+      );
+      return;
+    }
     await render(root, docId);
   });
   root.prepend(button);
+}
+
+/** Shows unresolved author IDs with text inputs so the professor can label
+ *  them manually. Authors are sorted by surviving character count (most chars
+ *  first) so the heaviest contributor is easiest to identify. Saved names are
+ *  merged with any auto-resolved names already in session storage. */
+function renderNameLabelingSection(
+  root: HTMLElement,
+  docId: string,
+  rawSurviving: Map<string | null, number>,
+  names: Record<AuthorId, string | null>
+): void {
+  const unresolved = Array.from(rawSurviving.keys())
+    .filter((id): id is AuthorId => id !== null && !names[id])
+    .sort((a, b) => (rawSurviving.get(b) ?? 0) - (rawSurviving.get(a) ?? 0));
+
+  if (unresolved.length === 0) return;
+
+  const section = document.createElement("div");
+  section.className = "gs-name-labeling";
+
+  const heading = document.createElement("p");
+  heading.innerHTML = `<strong>Label authors</strong> — ${unresolved.length} ID(s) couldn't be resolved automatically. Enter names to use them throughout the analysis.`;
+  section.appendChild(heading);
+
+  const inputs = new Map<AuthorId, HTMLInputElement>();
+  for (const authorId of unresolved) {
+    const charCount = rawSurviving.get(authorId) ?? 0;
+    const row = document.createElement("div");
+    row.className = "gs-name-row";
+
+    const label = document.createElement("span");
+    label.className = "gs-author-id";
+    label.textContent = `${charCount} chars — ${authorId}`;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "Enter name…";
+    input.className = "gs-name-input";
+    inputs.set(authorId, input);
+
+    row.appendChild(label);
+    row.appendChild(input);
+    section.appendChild(row);
+  }
+
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "gs-button";
+  saveBtn.textContent = "Save names";
+  saveBtn.addEventListener("click", async () => {
+    const updates: Record<AuthorId, string | null> = {};
+    let hasAny = false;
+    for (const [id, input] of inputs) {
+      const val = input.value.trim();
+      if (val) { updates[id] = val; hasAny = true; }
+    }
+    if (!hasAny) return;
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Saving…";
+    await chrome.runtime.sendMessage({ type: "groupsync-save-names", docId, names: updates });
+    await render(root, docId);
+  });
+  section.appendChild(saveBtn);
+  root.prepend(section);
 }
 
 /** F5.1: fetches real headings/tables from the Docs API. Opt-in (separate
@@ -169,17 +200,19 @@ function renderExportButton(root: HTMLElement, summary: ReturnType<typeof toCont
   root.prepend(button);
 }
 
-/** F7.2: every sentence is shown with the named rule that produced it, in a
- *  muted tag, so a contesting student can be told exactly which fixed rule
- *  backs a given claim (C3) — not just the prose. */
+/** Renders one narration sentence as an <li> with its rule ID shown in a muted tag (F7.2/C3). */
 function sentenceLi(sentence: { ruleId: string; text: string }): string {
   return `<li>${escapeHtml(sentence.text)} <span class="gs-rule-id">[${escapeHtml(sentence.ruleId)}]</span></li>`;
 }
 
+/** Renders the full narration report (disclaimer + sections + signals) as an HTML string. */
 function renderNarration(narration: ReturnType<typeof buildNarrationReport>): string {
   const sectionsHtml = narration.sections
     .filter((s) => s.sentences.length > 0)
-    .map((s) => `<div class="gs-section"><strong>¶${s.paragraph}</strong><ul>${s.sentences.map(sentenceLi).join("")}</ul></div>`)
+    .map((s) => {
+      const label = s.headingText ? `¶${s.paragraph} — ${escapeHtml(s.headingText)}` : `¶${s.paragraph}`;
+      return `<div class="gs-section"><strong>${label}</strong><ul>${s.sentences.map(sentenceLi).join("")}</ul></div>`;
+    })
     .join("");
   const signalsHtml = narration.signalSentences.length
     ? `<div class="gs-section"><strong>Signals</strong><ul>${narration.signalSentences.map(sentenceLi).join("")}</ul></div>`
@@ -190,6 +223,7 @@ function renderNarration(narration: ReturnType<typeof buildNarrationReport>): st
   );
 }
 
+/** Fetches stored ops/names/structure, runs the full analysis pipeline, and renders the popup. */
 async function render(root: HTMLElement, docId: string): Promise<void> {
   const [opsResult, namesResult, structureResult] = await Promise.all([
     chrome.runtime.sendMessage({ type: "groupsync-get-ops", docId }),
@@ -210,7 +244,8 @@ async function render(root: HTMLElement, docId: string): Promise<void> {
   }
 
   const { originByPosition, deletionLog } = replay(ops);
-  const surviving = mapToObject(survivingCharacterMap(originByPosition), names);
+  const rawSurviving = survivingCharacterMap(originByPosition);
+  const surviving = mapToObject(rawSurviving, names);
   const deletions = Object.fromEntries(
     Array.from(deletionOverwriteMap(deletionLog), ([actor, targets]) => [labelKey(actor, names), mapToObject(targets, names)])
   );
@@ -234,10 +269,6 @@ async function render(root: HTMLElement, docId: string): Promise<void> {
   const rawLateConcentration = detectLateConcentration(ops);
   const rawRevisionDepth = revisionDepthSignals(deletionOverwriteMap(deletionLog));
   const rawConcurrentEdits = detectConcurrentEditBoundaries(ops);
-
-  const expectedRoster = await getStoredRoster(docId);
-  const rawNonRosterAuthors = detectNonRosterAuthorship(expectedRoster, rawFootprints, names);
-  const missingRosterMembers = detectMissingRosterMembers(expectedRoster, rawFootprints, names);
 
   const footprints = rawFootprints.map((f) => ({
     author: labelKey(f.authorId, names),
@@ -263,14 +294,12 @@ async function render(root: HTMLElement, docId: string): Promise<void> {
     authorA: labelKey(c.authorA, names),
     authorB: labelKey(c.authorB, names),
   }));
-  const nonRosterAuthors = rawNonRosterAuthors.map((n) => ({ ...n, authorId: labelKey(n.authorId, names) }));
 
   const debugData = {
     opsCaptured: ops.length,
     structureSource: usingDocsStructure ? "Docs API (headings/tables)" : "newline-only paragraphs (fallback)",
     survivingCharactersByAuthor: surviving,
     deletionOverwriteByActor: deletions,
-    expectedRoster,
     signals: {
       footprints,
       pastes,
@@ -278,8 +307,6 @@ async function render(root: HTMLElement, docId: string): Promise<void> {
       lateConcentration,
       revisionDepth,
       concurrentEdits,
-      nonRosterAuthors,
-      missingRosterMembers,
     },
   };
 
@@ -291,11 +318,9 @@ async function render(root: HTMLElement, docId: string): Promise<void> {
     lateConcentration: rawLateConcentration,
     revisionDepth: rawRevisionDepth,
     concurrentEdits: rawConcurrentEdits,
-    nonRosterAuthors: rawNonRosterAuthors,
-    missingRosterMembers,
     names,
   });
-  const summary = toContentStrippedSummary(narration, rawFootprints);
+  const summary = toContentStrippedSummary(narration, rawFootprints, names);
 
   root.innerHTML =
     `<p class="gs-status">Capture + replay + structure + signals + narration (first-draft wording — see ME.MD). ` +
@@ -303,12 +328,13 @@ async function render(root: HTMLElement, docId: string): Promise<void> {
     renderNarration(narration) +
     `<pre class="gs-json">${escapeHtml(JSON.stringify(debugData, null, 2))}</pre>`;
   renderFetchHistoryButton(root, docId);
+  renderNameLabelingSection(root, docId, rawSurviving, names);
   renderResolveNamesButton(root, docId);
   renderFetchStructureButton(root, docId);
   renderExportButton(root, summary);
-  renderRosterInput(root, docId, expectedRoster);
 }
 
+/** Entry point: gets the active tab's doc ID and renders the popup. */
 async function main(): Promise<void> {
   const root = document.getElementById("gs-root");
   if (!root) return;

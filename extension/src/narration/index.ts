@@ -1,15 +1,13 @@
-import { DISCLAIMER } from "../shared/disclaimer";
 import type {
   AuthorFootprint,
   ConcurrentEditSignal,
   LateConcentrationSignal,
-  NonRosterAuthor,
   PasteSignal,
   QuarantineSignal,
   RevisionDepthSignal,
 } from "../signals";
 import { LATE_CONCENTRATION_WINDOW_FRACTION, narrationPhraseForShare } from "../signals";
-import type { Section } from "../structure";
+import { sectionHeadingText, type Section } from "../structure";
 import type { AuthorId } from "../types/mutation";
 
 /**
@@ -30,24 +28,27 @@ import type { AuthorId } from "../types/mutation";
  * effort is the professor's conclusion, never this tool's.
  */
 
+/** Spec-required banner, always shown at the top of any report or export. */
+const DISCLAIMER =
+  "This tool measures on-document editing only. It cannot detect off-document work, " +
+  "in-person contribution, or content drafted elsewhere and pasted in. Use as evidence, not as a verdict.";
+
 export interface RuledSentence {
   ruleId: string;
   text: string;
 }
 
+/** Formats a share fraction as a rounded percentage string. */
 function pct(share: number): string {
   return `${Math.round(share * 100)}%`;
 }
 
+/** Returns "Name" when the author is resolved, or "author <id>" when not. */
 function authorLabel(authorId: AuthorId, names: Record<AuthorId, string | null>): string {
   return names[authorId] ?? `author ${authorId}`;
 }
 
-/** F7.3: hedge to detectable FORM only, never inferred subject matter —
- *  "this calculations section" / "this discussion/theory section" when the
- *  Docs API told us the form (structure/docs-api.ts's classifyForm),
- *  otherwise the neutral "this section" the newline-only fallback always
- *  produces (it has no form information at all). */
+/** Returns "this calculations/discussion section" when form is known; "this section" otherwise (F7.3). */
 function sectionDescriptor(section: Section): string {
   if (!section.formClassification) return "this section";
   return `this ${section.formClassification} section`;
@@ -163,38 +164,14 @@ export function narrateConcurrentEdit(
   };
 }
 
-/** F4.2 — content not attributable to any expected group member; could be
- *  professor-provided template/boilerplate, or a non-group collaborator.
- *  Only ever produced when the professor entered an expected roster (see
- *  signals/index.ts's detectNonRosterAuthorship — never guesses). */
-export function narrateNonRosterAuthorship(
-  signal: NonRosterAuthor,
-  names: Record<AuthorId, string | null>
-): RuledSentence {
-  return {
-    ruleId: "F4.2-non-roster-authorship",
-    text:
-      `${signal.originatedChars} surviving characters are attributed to ${authorLabel(signal.authorId, names)}, ` +
-      `who doesn't match any name on the expected roster — possibly unmodified template/boilerplate text, or a ` +
-      `contributor outside the group.`,
-  };
-}
-
-/** F7.5 — C5: an expected member with no detected edits gets an explicit
- *  statement of what the data does/doesn't show, never silent omission. */
-export function narrateMissingRosterMember(expectedName: string): RuledSentence {
-  return {
-    ruleId: "F7.5-missing-roster-member",
-    text:
-      `No edits were detected for "${expectedName}" anywhere in the captured history. This may mean they did no ` +
-      `on-document work, worked under an unresolved or different account, or their name didn't match how it ` +
-      `resolved elsewhere — the data cannot distinguish these.`,
-  };
-}
-
 export interface SectionNarration {
   paragraph: number;
   sentences: RuledSentence[];
+  /** HANDOVER.md C1's scoped exception: the section's real heading text
+   *  (structure/index.ts's sectionHeadingText), when one exists — null for
+   *  the newline-only fallback or a heading-less section. Short navigational
+   *  text only, never the prose body. */
+  headingText: string | null;
 }
 
 export interface NarrationReport {
@@ -218,8 +195,6 @@ export interface NarrationInputs {
   lateConcentration: LateConcentrationSignal[];
   revisionDepth: RevisionDepthSignal[];
   concurrentEdits: ConcurrentEditSignal[];
-  nonRosterAuthors: NonRosterAuthor[];
-  missingRosterMembers: string[];
   names: Record<AuthorId, string | null>;
 }
 
@@ -229,6 +204,7 @@ export function buildNarrationReport(inputs: NarrationInputs): NarrationReport {
   const sections: SectionNarration[] = inputs.sections.map((section, i) => ({
     paragraph: i + 1,
     sentences: narrateSection(section, names),
+    headingText: sectionHeadingText(section),
   }));
 
   const signalSentences: RuledSentence[] = [
@@ -238,8 +214,6 @@ export function buildNarrationReport(inputs: NarrationInputs): NarrationReport {
     ...inputs.lateConcentration.map((l) => narrateLateConcentration(l, names)),
     ...inputs.revisionDepth.map((r) => narrateRevisionDepth(r, names)),
     ...inputs.concurrentEdits.map((c) => narrateConcurrentEdit(c, names)),
-    ...inputs.nonRosterAuthors.map((n) => narrateNonRosterAuthorship(n, names)),
-    ...inputs.missingRosterMembers.map((m) => narrateMissingRosterMember(m)),
   ];
 
   return {

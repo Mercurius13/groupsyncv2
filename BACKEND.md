@@ -1,31 +1,43 @@
 GroupSync — Backend Requirements
 
 
-The backend owns identity, licensing, rosters, and disclosure records.
-It is content-free: it never receives or stores student edit data.
+The backend owns identity, licensing, and disclosure records — administrative
+and billing metadata only. It is content-free: it never receives or stores
+student edit data, AND (decided 2026-06-29) never stores an actual list of
+named students either — only counts, for license seat-tracking.
 
 
 
 Purpose
 
 Provide the persistent, cross-session infrastructure that makes GroupSync a
-business (accounts, paid licenses) and a compliant tool (rosters, disclosure
-records) — without ever becoming a processor of student education records.
+business (accounts, paid licenses, seat counts) and a compliant tool
+(disclosure records) — without ever becoming a processor of student
+education records, and without becoming a data source the extension depends
+on for analysis.
 
 The scope decision (why this is narrow)
 
 The original backend was designed to receive edit data and run analysis. That
-role is dead: analysis moved into the extension (C1, local-only). What
-remains is identity and metadata. If a requirement here would cause the backend
-to receive raw mutations or document content, it is wrong by definition.
+role is dead: analysis moved into the extension (C1, local-only). An
+intermediate design also had the backend store an actual named roster
+(RosterMember: name/email per group) as the "authoritative join source" for
+resolving author IDs — that's dead too, decided 2026-06-29: name resolution
+happens entirely inside the extension (People API, with a Drive-API-
+permissions fallback for non-contacts — see EXTENSION.MD), which never needs
+or sends the backend any identity data to do it. What remains here is
+account/licensing administration and compliance records. If a requirement
+here would cause the backend to receive raw mutations, document content, or
+an actual list of named students, it is wrong by definition.
 
 Current State (2026-06-29)
 
-Rebuilt to spec for F1, F3, F4, F5 — verified end-to-end against a real
-MongoDB instance (full CRUD chain, CSV import, cross-professor authorization,
-cascading deletes, and `/summaries` accepting the extension's real exported
-payload unmodified). **F2 (licensing) is explicitly deferred** — skipped this
-pass by decision, tracked below, not started.
+Rebuilt to spec for F1, F3 (now scoped to metadata + counts, not rosters),
+F4, F5 — verified end-to-end against a real MongoDB instance (full CRUD
+chain, cross-professor authorization, cascading deletes, and `/summaries`
+accepting the extension's real exported payload unmodified). **F2
+(licensing) is explicitly deferred** — skipped this pass by decision, tracked
+below, not started.
 
 - `auth.py`/`dependencies.py` (F1) — rebuilt. Professors are their own
   collection (`db.professors`), not `users`; the OAuth callback only ever
@@ -33,16 +45,22 @@ pass by decision, tracked below, not started.
   entirely — `admin.py` was deleted (no admin/instructor/student model exists
   anymore; nothing in F1-F5 needs it).
 - `classes.py`, `assignments.py`, `groups.py` (F3) — rebuilt to the
-  Class→Assignment→Group→RosterMember chain (DATABASE.md E4-E7).
-  `assignments.py` now stores just `{class_id, name, doc_reference}` — the
-  old file-attachment upload/deadline/instructions feature was dropped, since
-  F2.3 only wants a `doc_reference` identifier (decided, not still open).
-  Every router checks the requesting professor owns the class up the chain
-  (verified: a second professor gets 404, not the first professor's data).
-- `roster.py` (new, F3) — `RosterMember` is its own collection
-  (`db.roster_members`), scoped to a group, with single-add and CSV-bulk-
-  import endpoints (`POST /groups/{id}/roster`, `POST
-  /groups/{id}/roster/import`). Never touches the professors collection.
+  Class→Assignment→Group chain (DATABASE.md E4-E6). `assignments.py` stores
+  just `{class_id, name, doc_reference}` — the old file-attachment upload/
+  deadline/instructions feature was dropped, since F2.3 only wants a
+  `doc_reference` identifier. `groups.py` stores `expected_size: int | null`
+  — a count only, for the professor's own reference and license seat-
+  tracking, never a named member list. Every router checks the requesting
+  professor owns the class up the chain (verified: a second professor gets
+  404, not the first professor's data).
+- **Removed 2026-06-29: `roster.py` and the `RosterMember` model.** A prior
+  version of this backend stored an actual per-group roster (name/email,
+  with CSV bulk import) as the join source for resolving edit-log author IDs
+  to named students. That's gone — name resolution happens entirely inside
+  the extension now (People API + Drive permissions fallback), which never
+  calls this backend to do it (HANDOVER.md C1: the extension never connects
+  to our own backend, in either direction). `groups.expected_size` is what's
+  left of "roster" here: a count, not an identity list.
 - `disclosure.py` (new, F4) — `GET /disclosure/template` returns real
   template language (not a placeholder); `POST /disclosure` is append-only
   (no PATCH/DELETE route exists, satisfying DATABASE.md N4); `GET
@@ -97,17 +115,21 @@ any analysis content.
 F2.4 Gate extension/dashboard features by license status.
 
 
-F3 — Rosters & class/group metadata
+F3 — Class/group metadata & seat counts
 
 
-F3.1 Let a professor define classes, assignments, and the expected
-membership of each group (the roster).
-F3.2 Store student identifiers needed to map edit-log author IDs to named
-students: name, institutional email, Google user ID where available.
-F3.3 This directly fixes the earlier bug where members held one person
-while six edited the doc, and where a provided email (jm2635) came back as an
-anonymous "Contributor". The roster is the authoritative join source.
-F3.4 Roster data is metadata (identity), not edit content — permitted.
+F3.1 Let a professor define classes, assignments, and groups.
+F3.2 Track an expected member COUNT per group (license seat-tracking,
+billing reference) — never a named list of students.
+F3.3 (Superseded 2026-06-29) An earlier version of this requirement had the
+backend store an actual roster (name/email per group) as the join source for
+resolving edit-log author IDs to named students, to fix a real bug (members
+held one person while six edited the doc; a provided email came back as an
+anonymous "Contributor"). That join now happens entirely inside the
+extension (People API + Drive-permissions fallback) — the backend is never
+involved in author-ID-to-name resolution and never sees an author ID at all.
+F3.4 Whatever is stored here (counts, metadata) is never edit content —
+permitted under C1 regardless.
 
 
 F4 — Disclosure & consent records
@@ -137,8 +159,7 @@ API surface (as built — F2's /licenses doesn't exist yet, deferred)
 GET /auth/google, GET /auth/callback, GET /auth/me — professor login/session
 GET/POST/PATCH/DELETE /classes, /classes/{id}
 GET/POST/PATCH/DELETE /assignments, /assignments/{id}
-GET/POST/PATCH/DELETE /groups, /groups/{id}
-GET/POST /groups/{id}/roster, POST /groups/{id}/roster/import (CSV), DELETE /roster/{id}
+GET/POST/PATCH/DELETE /groups, /groups/{id} (PATCH accepts name and/or expected_size)
 POST /disclosure — record disclosure for a class/assignment (append-only)
 GET /disclosure/template — fetch template language
 GET /disclosure?class_id=|assignment_id= — audit trail
@@ -156,8 +177,9 @@ Non-Functional Requirements
 
 N1 Content-free guarantee: no endpoint accepts raw edit data or document
 content (C1).
-N2 Roster/identity data is the minimum needed to resolve author IDs to
-students.
+N2 The backend never resolves edit-log author IDs to names — that's the
+extension's job entirely (People API / Drive permissions). Group data here
+is a count, not an identity list.
 N3 Standard SaaS security: encrypted at rest and in transit, access scoped
 per professor/institution.
 N4 Auditability of disclosure records (who enabled tracking, when, with

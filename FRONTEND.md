@@ -3,7 +3,8 @@ GroupSync — Frontend Requirements
 
 The frontend is a management dashboard and evidence viewer (Canvas-like).
 It is NOT an analysis surface — attribution happens in the extension. The
-dashboard manages accounts, licenses, rosters, disclosure, and displays
+dashboard manages accounts, licenses, class/assignment/group setup
+(group size as a count only, never a named roster), disclosure, and displays
 evidence the extension produced.
 
 
@@ -19,10 +20,12 @@ Rebuilt from the bare Vite scaffold into a working dashboard: **Vite + React +
 TypeScript + react-router** (decided; not Next.js — avoids server-rendering
 machinery this thin dashboard doesn't need). F1-F5 are all built and verified
 end-to-end in a real headless browser against the real backend (login token
-flow, class/assignment/group/roster CRUD including CSV import, disclosure
-template/recording, and evidence intake/preview/save using the real
-`extension/src/export/index.ts` payload) — see `ME.MD` if this needs
-re-verifying after a dependency bump.
+flow, class/assignment/group CRUD, disclosure template/recording, and
+evidence intake/preview/save using the real `extension/src/export/index.ts`
+payload) — see `ME.MD` if this needs re-verifying after a dependency bump.
+**Group rosters (named students) were removed by decision 2026-06-29** — see
+F2.2 below; the original browser verification predates this change and
+exercised the now-removed roster CRUD/CSV-import flow instead.
 
 - `src/auth.ts`, `src/AuthContext.tsx` (F1) — token stored in `localStorage`;
   `RequireAuth` fetches `/auth/me` once and redirects to `/login` if it
@@ -30,9 +33,11 @@ re-verifying after a dependency bump.
   (licensing) was deferred on the backend, so there's nothing to display yet.
 - `src/pages/Dashboard.tsx`, `ClassPage.tsx`, `AssignmentPage.tsx`,
   `GroupPage.tsx` (F2) — full CRUD chain matching the backend's
-  Class→Assignment→Group→RosterMember hierarchy, including the CSV
-  bulk-import file input (verified with a real CSV through the browser, not
-  just the API).
+  Class→Assignment→Group hierarchy. **F2.2 (group rosters) was removed by
+  decision 2026-06-29** — `GroupPage.tsx`'s roster CRUD/CSV-import UI was
+  replaced with a single `expected_size` count field (license seat-tracking
+  reference only); the backend never stores named students, so there was
+  nothing left for that UI to manage.
 - `ClassPage.tsx`'s disclosure section (F3) — fetches the real template,
   lets the professor edit/reset it, records it, and lists the append-only
   history. The institutional-sign-off reminder (F3.3) is a persistent
@@ -82,9 +87,12 @@ F2 — Class / assignment / group setup
 
 
 F2.1 Create and manage classes, assignments, and groups.
-F2.2 Define group rosters — the expected members of each group — which
-become the authoritative join source for resolving edit-log author IDs to named
-students (fixes the prior anonymous-contributor bug).
+F2.2 (Superseded 2026-06-29) Previously: define group rosters — the
+expected members of each group — as the join source for resolving edit-log
+author IDs to named students. That join now happens entirely inside the
+extension (People API + Drive-permissions fallback); the frontend instead
+lets the professor set an `expected_size` count per group, for their own
+reference and license seat-tracking — never a named member list.
 F2.3 Associate each assignment with a doc reference (identifier the
 professor uses to locate the doc; not its content).
 

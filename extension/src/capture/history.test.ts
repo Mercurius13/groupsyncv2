@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchFullHistory, findMaxRevision, parseRevisionLoadResponse, revisionLoadUrl } from "./history";
+import { fetchFullHistory, findMaxRevision, parseRevisionLoadResponse, parseUserMapFromBody, revisionLoadUrl } from "./history";
 
 // Real envelope, confirmed against a captured response 2026-06-XX (see
 // history.ts module docstring): XSSI prefix + one JSON object with
@@ -102,6 +102,39 @@ describe("findMaxRevision", () => {
   });
 });
 
+describe("parseUserMapFromBody", () => {
+  it("extracts names from a 'userMap' field keyed by author id", () => {
+    const names = parseUserMapFromBody({
+      changelog: [],
+      userMap: { "12345": { name: "Ada Lovelace" }, "67890": { name: "Grace Hopper" } },
+    });
+    expect(names).toEqual({ "12345": "Ada Lovelace", "67890": "Grace Hopper" });
+  });
+
+  it("falls back to 'users' when 'userMap' is absent", () => {
+    const names = parseUserMapFromBody({ changelog: [], users: { "12345": { displayName: "Ada Lovelace" } } });
+    expect(names).toEqual({ "12345": "Ada Lovelace" });
+  });
+
+  it("accepts a flat string value (id → name directly)", () => {
+    const names = parseUserMapFromBody({ changelog: [], userMap: { "12345": "Ada Lovelace" } });
+    expect(names).toEqual({ "12345": "Ada Lovelace" });
+  });
+
+  it("falls back to emailAddress within an entry when name fields are absent", () => {
+    const names = parseUserMapFromBody({ changelog: [], userMap: { "12345": { emailAddress: "ada@example.com" } } });
+    expect(names).toEqual({ "12345": "ada@example.com" });
+  });
+
+  it("returns an empty object when no known user-map field is present", () => {
+    expect(parseUserMapFromBody({ changelog: [] })).toEqual({});
+  });
+
+  it("returns an empty object when the field is not an object", () => {
+    expect(parseUserMapFromBody({ changelog: [], userMap: "not-an-object" as unknown as undefined })).toEqual({});
+  });
+});
+
 describe("fetchFullHistory", () => {
   it("finds the revision ceiling, fetches that single page, and parses its ops", async () => {
     const pageUrl = revisionLoadUrl("doc1", 1, 3);
@@ -128,10 +161,30 @@ describe("fetchFullHistory", () => {
       ],
     ]);
 
-    const ops = await fetchFullHistory("doc1", fakeFetch(responses) as unknown as typeof fetch);
+    const { ops, names } = await fetchFullHistory("doc1", fakeFetch(responses) as unknown as typeof fetch);
     expect(ops).toEqual([
       { type: "insert", authorId: "author-1", timestamp: 1, position: 0, text: "a" },
       { type: "insert", authorId: "author-1", timestamp: 2, position: 1, text: "b" },
     ]);
+    expect(names).toEqual({});
+  });
+
+  it("returns names from a userMap embedded in the response", async () => {
+    const pageUrl = revisionLoadUrl("doc1", 1, 1);
+    const probeUrl = revisionLoadUrl("doc1", 2, 2);
+    const responseWithNames = `)]}'\n${JSON.stringify({
+      chunkedSnapshot: [],
+      changelog: [[{ ty: "is", ibi: 0, s: "x" }, 1, "author-1", 1, "s", 1, null, null, false]],
+      userMap: { "author-1": { name: "Ada Lovelace" } },
+    })}`;
+
+    const responses = new Map<string, { ok: boolean; status: number; text: string }>([
+      [pageUrl, { ok: true, status: 200, text: responseWithNames }],
+      [probeUrl, { ok: false, status: 400, text: "" }],
+    ]);
+
+    const { ops, names } = await fetchFullHistory("doc1", fakeFetch(responses) as unknown as typeof fetch);
+    expect(ops).toHaveLength(1);
+    expect(names).toEqual({ "author-1": "Ada Lovelace" });
   });
 });

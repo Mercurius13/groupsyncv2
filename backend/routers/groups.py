@@ -12,14 +12,25 @@ router = APIRouter(prefix="/groups")
 class GroupCreate(BaseModel):
     assignment_id: str
     name: str
+    expected_size: int | None = None
 
 
 class GroupUpdate(BaseModel):
-    name: str
+    name: str | None = None
+    expected_size: int | None = None
 
 
 def _fmt(g: dict) -> dict:
-    return {"id": str(g["_id"]), "assignment_id": g["assignment_id"], "name": g["name"]}
+    return {
+        "id": str(g["_id"]),
+        "assignment_id": g["assignment_id"],
+        "name": g["name"],
+        # F3 (2026-06-29 decision): the backend tracks group SIZE for license
+        # seat-counting purposes only — never an actual named roster. Name
+        # resolution of who's on a doc happens in the extension (People
+        # API/Drive permissions), which the backend never sees or needs.
+        "expected_size": g.get("expected_size"),
+    }
 
 
 @router.get("")
@@ -32,7 +43,7 @@ async def list_groups(assignment_id: str, user=Depends(get_current_user)):
 @router.post("")
 async def create_group(body: GroupCreate, user=Depends(get_current_user)):
     await _get_owned_assignment_or_404(body.assignment_id, user)
-    doc = {"assignment_id": body.assignment_id, "name": body.name}
+    doc = {"assignment_id": body.assignment_id, "name": body.name, "expected_size": body.expected_size}
     result = await db.groups.insert_one(doc)
     doc["_id"] = result.inserted_id
     return _fmt(doc)
@@ -41,14 +52,16 @@ async def create_group(body: GroupCreate, user=Depends(get_current_user)):
 @router.patch("/{group_id}")
 async def update_group(group_id: str, body: GroupUpdate, user=Depends(get_current_user)):
     g = await _get_owned_group_or_404(group_id, user)
-    await db.groups.update_one({"_id": g["_id"]}, {"$set": {"name": body.name}})
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    await db.groups.update_one({"_id": g["_id"]}, {"$set": updates})
     return {"ok": True}
 
 
 @router.delete("/{group_id}")
 async def delete_group(group_id: str, user=Depends(get_current_user)):
     g = await _get_owned_group_or_404(group_id, user)
-    await db.roster_members.delete_many({"group_id": group_id})
     await db.summaries.delete_many({"group_id": group_id})
     await db.groups.delete_one({"_id": g["_id"]})
     return {"ok": True}

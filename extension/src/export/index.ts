@@ -9,15 +9,16 @@ import type { AuthorId } from "../types/mutation";
  * outside the extension; per FRONTEND.md F5.1 the payload is narration +
  * counts + section labels ONLY.
  *
- * This is enforced by the TYPE, not a runtime filter: ExportedSection has
- * no `text` field, so there is no field to forget to strip. `NarrationReport.
- * sections[].text` from narration/index.ts (used for the LOCAL, in-extension
- * debug view only, never exported) is the thing this module must never
- * forward — `sectionLabel` below is a purely positional placeholder
- * ("Paragraph N"), not an excerpt, precisely because even a short excerpt is
- * document content. See ME.MD: a future evidence viewer wanting a more
- * readable label needs its own design discussion, not silently piping
- * `section.text` through.
+ * `sectionLabel` is HANDOVER.md C1's scoped exception (2026-06-29): when the
+ * section has a real heading (Docs API structure), the label is that
+ * heading's own text (e.g. "Executive Summary") — purely positional labels
+ * ("Paragraph 47") turned out unusable in practice, no way to tell which
+ * section is which without the source doc open side by side. This is
+ * `narration/index.ts`'s `sectionHeadingText` output ONLY — the heading
+ * LINE itself, never the prose body that follows it (`Section.text`'s full
+ * reconstructed content never reaches this module). Falls back to
+ * "Paragraph N" when there's no heading (the newline-only segmenter never
+ * sets one).
  */
 
 export interface ExportedSection {
@@ -27,6 +28,10 @@ export interface ExportedSection {
 
 export interface AuthorCount {
   authorId: AuthorId;
+  /** Resolved via the People API (identity/people.ts) where available; null
+   *  if unresolved. Never invented — readability addition alongside, not
+   *  instead of, authorId (C3: the raw ID stays for traceability/audit). */
+  authorName: string | null;
   originatedChars: number;
   totalSurvivingChars: number;
   originShare: number;
@@ -43,6 +48,7 @@ export interface ContentStrippedSummary {
 export function toContentStrippedSummary(
   narration: NarrationReport,
   footprints: AuthorFootprint[],
+  names: Record<AuthorId, string | null> = {},
   now: () => number = Date.now
 ): ContentStrippedSummary {
   return {
@@ -50,10 +56,14 @@ export function toContentStrippedSummary(
     generatedAt: now(),
     sections: narration.sections
       .filter((s) => s.sentences.length > 0)
-      .map((s) => ({ sectionLabel: `Paragraph ${s.paragraph}`, sentences: s.sentences.map((sentence) => sentence.text) })),
+      .map((s) => ({
+        sectionLabel: s.headingText ?? `Paragraph ${s.paragraph}`,
+        sentences: s.sentences.map((sentence) => sentence.text),
+      })),
     signalNotes: narration.signalNotes,
     authorCounts: footprints.map((f) => ({
       authorId: f.authorId,
+      authorName: names[f.authorId] ?? null,
       originatedChars: f.originatedChars,
       totalSurvivingChars: f.totalSurvivingChars,
       originShare: f.originShare,

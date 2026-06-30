@@ -40,9 +40,34 @@
       .gs-narration ul { margin: 4px 0 0 18px; padding: 0; }
       .gs-rule-id { color: #9aa0a6; font-size: 10.5px; font-family: "SF Mono", Menlo, Consolas, monospace; }
 
-      .gs-roster-input { margin: 8px 0; }
-      .gs-roster-input label { display: block; font-size: 11.5px; color: #5f6368; margin-bottom: 4px; }
-      .gs-roster-input textarea { width: 100%; font: inherit; }
+      .gs-name-labeling {
+        border: 1px solid #dadce0;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin-bottom: 10px;
+      }
+      .gs-name-labeling p { margin: 0 0 8px; }
+      .gs-name-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 6px;
+      }
+      .gs-author-id {
+        flex: 1;
+        font: 11px "SF Mono", Menlo, Consolas, monospace;
+        color: #5f6368;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .gs-name-input {
+        font: inherit;
+        width: 180px;
+        padding: 4px 8px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+      }
 
       .gs-json {
         margin: 0;

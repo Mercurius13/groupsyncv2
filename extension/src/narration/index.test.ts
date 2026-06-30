@@ -3,8 +3,6 @@ import { replay, deletionOverwriteMap } from "../replay";
 import {
   detectConcurrentEditBoundaries,
   detectLateConcentration,
-  detectMissingRosterMembers,
-  detectNonRosterAuthorship,
   detectPastes,
   detectQuarantineSignals,
   revisionDepthSignals,
@@ -17,8 +15,6 @@ import {
   narrateConcurrentEdit,
   narrateIntegratorPattern,
   narrateLateConcentration,
-  narrateMissingRosterMember,
-  narrateNonRosterAuthorship,
   narratePaste,
   narrateQuarantine,
   narrateRevisionDepth,
@@ -39,8 +35,6 @@ const EMPTY_INPUTS = {
   lateConcentration: [],
   revisionDepth: [],
   concurrentEdits: [],
-  nonRosterAuthors: [],
-  missingRosterMembers: [],
   names: NAMES,
 };
 
@@ -189,22 +183,6 @@ describe("narrateConcurrentEdit (F6.6)", () => {
   });
 });
 
-describe("narrateNonRosterAuthorship (F4.2)", () => {
-  it("describes non-matching authorship as possible template content, not an accusation", () => {
-    const text = narrateNonRosterAuthorship({ authorId: "111", originatedChars: 42 }, NAMES).text;
-    expect(text).toContain("42 surviving characters are attributed to Ada Lovelace");
-    expect(text).toContain("doesn't match any name on the expected roster");
-  });
-});
-
-describe("narrateMissingRosterMember (F7.5)", () => {
-  it("states what the data does/doesn't show, never a silent 'no role'", () => {
-    const text = narrateMissingRosterMember("Bob Jones").text;
-    expect(text).toContain('No edits were detected for "Bob Jones"');
-    expect(text).toContain("the data cannot distinguish these");
-  });
-});
-
 describe("buildNarrationReport", () => {
   it("always includes the standing disclaimer", () => {
     const report = buildNarrationReport(EMPTY_INPUTS);
@@ -221,6 +199,7 @@ describe("buildNarrationReport", () => {
     expect(report.sections).toEqual([
       {
         paragraph: 1,
+        headingText: null,
         sentences: [
           { ruleId: "F7.3-section-authorship", text: "Ada Lovelace primarily authored this section (100% of its surviving characters)." },
         ],
@@ -230,26 +209,5 @@ describe("buildNarrationReport", () => {
     expect(report.signalNotes[0]).toContain("Grace Hopper inserted 500 characters");
     expect(report.ruleTrace).toHaveLength(2); // 1 section sentence + 1 signal note
     expect(report.ruleTrace.map((r) => r.ruleId)).toEqual(["F7.3-section-authorship", "F4.1-paste"]);
-  });
-
-  it("includes roster-comparison signals when an expected roster is provided", () => {
-    const ops: MutationLog = [{ type: "insert", authorId: "111", timestamp: 1, position: 0, text: "hi" }];
-    const { originByPosition } = replay(ops);
-    const sections = segmentIntoParagraphs(originByPosition);
-    const names = { "111": "Ada Lovelace" };
-    const nonRosterAuthors = detectNonRosterAuthorship(
-      ["Grace Hopper"],
-      [{ authorId: "111", sectionsTouched: 1, totalSections: 1, revisionBreadth: 1, originatedChars: 2, totalSurvivingChars: 2, originShare: 1, isIntegratorPattern: false }],
-      names
-    );
-    const missingRosterMembers = detectMissingRosterMembers(
-      ["Grace Hopper"],
-      [{ authorId: "111", sectionsTouched: 1, totalSections: 1, revisionBreadth: 1, originatedChars: 2, totalSurvivingChars: 2, originShare: 1, isIntegratorPattern: false }],
-      names
-    );
-
-    const report = buildNarrationReport({ ...EMPTY_INPUTS, sections, nonRosterAuthors, missingRosterMembers, names });
-    expect(report.signalNotes.some((n) => n.includes("doesn't match any name on the expected roster"))).toBe(true);
-    expect(report.signalNotes.some((n) => n.includes('No edits were detected for "Grace Hopper"'))).toBe(true);
   });
 });

@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { apiFetch } from "../api";
 import { EvidenceViewer } from "../components/EvidenceViewer";
-import type { ContentStrippedSummary, GroupRecord, RosterMemberRecord, SavedSummaryRecord } from "../types";
+import type { ContentStrippedSummary, GroupRecord, SavedSummaryRecord } from "../types";
 
 export function GroupPage() {
   const { classId, assignmentId, groupId } = useParams<{
@@ -11,11 +11,8 @@ export function GroupPage() {
     groupId: string;
   }>();
   const [group, setGroup] = useState<GroupRecord | null>(null);
-  const [roster, setRoster] = useState<RosterMemberRecord[] | null>(null);
-  const [studentName, setStudentName] = useState("");
-  const [studentEmail, setStudentEmail] = useState("");
+  const [expectedSize, setExpectedSize] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const csvInputRef = useRef<HTMLInputElement>(null);
 
   const [pastedJson, setPastedJson] = useState("");
   const [preview, setPreview] = useState<ContentStrippedSummary | null>(null);
@@ -24,12 +21,10 @@ export function GroupPage() {
 
   function reloadGroup() {
     apiFetch<GroupRecord[]>(`/groups?assignment_id=${assignmentId}`).then((all) => {
-      setGroup(all.find((g) => g.id === groupId) ?? null);
+      const g = all.find((x) => x.id === groupId) ?? null;
+      setGroup(g);
+      setExpectedSize(g?.expected_size?.toString() ?? "");
     });
-  }
-
-  function reloadRoster() {
-    apiFetch<RosterMemberRecord[]>(`/groups/${groupId}/roster`).then(setRoster);
   }
 
   function reloadSummaries() {
@@ -38,44 +33,20 @@ export function GroupPage() {
 
   useEffect(() => {
     reloadGroup();
-    reloadRoster();
     reloadSummaries();
   }, [assignmentId, groupId]);
 
-  async function addRosterMember(e: React.FormEvent) {
+  async function saveExpectedSize(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     try {
-      await apiFetch(`/groups/${groupId}/roster`, {
-        method: "POST",
-        body: JSON.stringify({ student_name: studentName, student_email: studentEmail }),
+      await apiFetch(`/groups/${groupId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ expected_size: expectedSize ? Number(expectedSize) : null }),
       });
-      setStudentName("");
-      setStudentEmail("");
-      reloadRoster();
+      reloadGroup();
     } catch (err) {
       setError((err as Error).message);
-    }
-  }
-
-  async function removeRosterMember(memberId: string) {
-    await apiFetch(`/roster/${memberId}`, { method: "DELETE" });
-    reloadRoster();
-  }
-
-  async function importCsv(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setError(null);
-    const formData = new FormData();
-    formData.append("file", file);
-    try {
-      await apiFetch(`/groups/${groupId}/roster/import`, { method: "POST", body: formData });
-      reloadRoster();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      if (csvInputRef.current) csvInputRef.current.value = "";
     }
   }
 
@@ -117,30 +88,23 @@ export function GroupPage() {
       {error && <p className="error">{error}</p>}
 
       <section>
-        <h3>Roster</h3>
-        <form onSubmit={addRosterMember} className="inline-form">
-          <input placeholder="Student name" value={studentName} onChange={(e) => setStudentName(e.target.value)} required />
-          <input placeholder="Student email" value={studentEmail} onChange={(e) => setStudentEmail(e.target.value)} required />
-          <button type="submit">Add</button>
+        <h3>Expected group size</h3>
+        <p className="muted">
+          A count only, for your own reference and license seat-tracking — the backend never stores
+          an actual list of students. Names are resolved inside the extension (via the People API or
+          Drive permissions), never sent here.
+        </p>
+        <form onSubmit={saveExpectedSize} className="inline-form">
+          <input
+            type="number"
+            min={0}
+            placeholder="e.g. 4"
+            value={expectedSize}
+            onChange={(e) => setExpectedSize(e.target.value)}
+            style={{ width: 100 }}
+          />
+          <button type="submit">Save</button>
         </form>
-        <div className="inline-form">
-          <label className="muted">Or bulk-import CSV (e.g. Canvas roster export):</label>
-          <input ref={csvInputRef} type="file" accept=".csv" onChange={importCsv} />
-        </div>
-        {roster === null ? (
-          <p className="muted">Loading…</p>
-        ) : roster.length === 0 ? (
-          <p className="muted">No roster members yet — this is the authoritative join source for resolving edit-log author IDs (F3.3).</p>
-        ) : (
-          <ul className="record-list">
-            {roster.map((m) => (
-              <li key={m.id}>
-                {m.student_name} — <span className="muted">{m.student_email}</span>{" "}
-                <button onClick={() => removeRosterMember(m.id)}>Remove</button>
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
 
       <section>

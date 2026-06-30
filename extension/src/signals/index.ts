@@ -13,10 +13,14 @@ import type { AuthorId, InsertOp, MutationLog, MutationOp } from "../types/mutat
  * Self-claimed-vs-actual comparison (the other half of F6) is NOT
  * implemented here: it needs a still-undefined input (where would a
  * student's self-claimed section come from? no such data source exists
- * yet), unlike the signals below which derive entirely from the mutation
- * log (plus, for F4.2/F7.5, an optional professor-entered expected-roster
- * list — typed locally into the popup, never fetched over the network;
- * C1 only permits People/Docs API calls, not calls to our own backend).
+ * yet) — same reasoning applies to F4.2 (non-roster authorship) and F7.5
+ * (missing roster member), which WERE implemented in an earlier version of
+ * this module (a manually-typed expected-roster list in the popup) but were
+ * removed by decision 2026-06-29: requiring the professor to retype a
+ * roster by hand provided little real value and confused the (unrelated,
+ * automatic) name-resolution flow. All signals below derive entirely from
+ * the mutation log plus People-API/Drive-API-resolved names — no
+ * externally-provided roster of any kind.
  */
 
 // ── F4.1 — large-paste detection ───────────────────────────────────────────
@@ -327,55 +331,4 @@ export function detectConcurrentEditBoundaries(ops: MutationLog): ConcurrentEdit
   }
 
   return signals;
-}
-
-// ── F4.2 / F7.5 — expected-roster comparison ───────────────────────────────
-// Both require knowing who was EXPECTED to edit the doc, which isn't
-// derivable from the mutation log itself. The professor can type/paste a
-// list of expected names locally into the popup (never fetched over the
-// network — C1 only permits Google People/Docs API calls). Matching is
-// exact, case/whitespace-insensitive string match against resolved names
-// only — never fuzzy, never guessed, so a mismatch (typo, nickname,
-// unresolved account) is reported as "no match," not silently merged.
-function normalizeRosterName(name: string): string {
-  return name.trim().toLowerCase();
-}
-
-export interface NonRosterAuthor {
-  authorId: AuthorId;
-  originatedChars: number;
-}
-
-/** F4.2: surviving content authored by someone whose resolved name doesn't
- *  match any expected-roster entry — e.g. professor-provided template text,
- *  a TA, or a collaborator outside the group. Returns [] (not "everyone is
- *  non-roster") when no expected roster was entered — without a roster
- *  there is nothing to compare against, and guessing would violate C3. */
-export function detectNonRosterAuthorship(
-  expectedRoster: string[],
-  footprints: AuthorFootprint[],
-  names: Record<AuthorId, string | null>
-): NonRosterAuthor[] {
-  if (expectedRoster.length === 0) return [];
-  const expected = new Set(expectedRoster.map(normalizeRosterName));
-  return footprints
-    .filter((f) => {
-      const resolved = names[f.authorId];
-      return !resolved || !expected.has(normalizeRosterName(resolved));
-    })
-    .map((f) => ({ authorId: f.authorId, originatedChars: f.originatedChars }));
-}
-
-/** F7.5: expected-roster entries with no matching resolved author at all —
- *  i.e. zero detected edits. C5: this must be reported as "what the data
- *  does/doesn't show," never silently omitted as an unstated "no role." */
-export function detectMissingRosterMembers(
-  expectedRoster: string[],
-  footprints: AuthorFootprint[],
-  names: Record<AuthorId, string | null>
-): string[] {
-  const detected = new Set(
-    footprints.map((f) => names[f.authorId]).filter((n): n is string => !!n).map(normalizeRosterName)
-  );
-  return expectedRoster.filter((expected) => !detected.has(normalizeRosterName(expected)));
 }

@@ -1,10 +1,12 @@
 GroupSync — Database Requirements
 
 
-The database persists identity, licensing, rosters, disclosure records, and
-optional content-stripped summaries. It never stores raw mutation streams
-or document content. Scope moves in lockstep with the backend.
-Inherits all constraints from 00-architecture-overview.md.
+The database persists identity, licensing, class/group metadata (counts, not
+named rosters — decided 2026-06-29), disclosure records, and optional
+content-stripped summaries. It never stores raw mutation streams or document
+content, AND never stores an actual list of named students. Scope moves in
+lockstep with the backend. Inherits all constraints from
+00-architecture-overview.md.
 
 
 
@@ -20,8 +22,9 @@ The pre-pivot collections (`users`, `classes`, `groups`, `assignments`,
 `submissions`, `tasks`, plus a leftover `contribution_reports` from before
 that) have been dropped entirely — there was no real student/grading data in
 any of them, so this was a clean rebuild, not a migration. The real MongoDB
-database now has, and only has, collections matching E2/E4-E9 (E1 Institution
-and E3 License are the two not yet realized — see below):
+database now has, and only has, collections matching E2/E4/E5/E6/E8/E9 (E1
+Institution and E3 License aren't realized yet; **E7 RosterMember was
+removed by decision 2026-06-29** — see below):
 
 - `professors` (E2) — `{email, name, google_id, institution_id: null}`. No
   `role` field; professors are the only account type that exists (F1.4).
@@ -29,11 +32,16 @@ and E3 License are the two not yet realized — see below):
 - `assignments` (E5) — `{class_id, name, doc_reference, created_at}`. No
   attachment/instructions/deadline fields — those belonged to the dead
   pre-pivot "run the assignment" model.
-- `groups` (E6) — `{assignment_id, name}`. Scoped to assignment, not class —
-  per BACKEND.md F3.1, the roster is the expected membership of a *group*,
-  not a class-wide roster.
-- `roster_members` (E7) — `{group_id, student_name, student_email,
-  google_user_id: null}`. Verified end-to-end including CSV bulk import.
+- `groups` (E6) — `{assignment_id, name, expected_size: int | null}`. Scoped
+  to assignment, not class. `expected_size` is a count only, for the
+  professor's reference and license seat-tracking — replaces the removed
+  `RosterMember` sub-collection entirely.
+- **Removed 2026-06-29: `roster_members` (was E7).** Stored actual named
+  students (`student_name`, `student_email`) as the "authoritative join
+  source" for resolving edit-log author IDs. That join now happens entirely
+  inside the extension (People API + Drive-permissions fallback) — the
+  database never needs, and now never holds, an actual list of named
+  students. `groups.expected_size` is what replaced it.
 - `disclosure_records` (E8) — `{class_id, assignment_id, professor_id,
   disclosure_text, enabled_at}`. Append-only: no update/delete path exists in
   `disclosure.py` (N4 holds by omission, not by a guard check).
@@ -98,18 +106,20 @@ professor uses to locate the doc — not its content).
 E6 — Group
 
 
-group_id, assignment_id, name.
+group_id, assignment_id, name, expected_size (nullable int).
+expected_size is a count only, for the professor's reference and license
+seat-tracking — never a named list of students.
 
 
-E7 — RosterMember
+E7 — RosterMember (REMOVED 2026-06-29)
 
 
-member_id, group_id, student_name, student_email,
-google_user_id (nullable).
-This is the authoritative join source for resolving edit-log author IDs to
-named students. Directly addresses the prior failures: a one-person members
-list against six editors, and a provided email surfacing as anonymous.
-Identity metadata only; no edit content.
+Used to store member_id, group_id, student_name, student_email,
+google_user_id (nullable) as the authoritative join source for resolving
+edit-log author IDs to named students. That join now happens entirely inside
+the extension (People API + Drive-permissions fallback); the database never
+needs an actual list of named students to support it. Kept here, struck
+through, so the "why" of E6's expected_size field doesn't get lost.
 
 
 E8 — DisclosureRecord
@@ -131,7 +141,7 @@ No raw mutations, no document text. Default off. Deletable by the professor.
 
 Relationships
 
-Institution 1—* Professor 1—* Class 1—* Assignment 1—* Group 1—* RosterMember
+Institution 1—* Professor 1—* Class 1—* Assignment 1—* Group
 Professor   1—* License
 Class/Assignment 1—* DisclosureRecord
 Group 1—* SavedSummary   (optional)
@@ -143,8 +153,8 @@ N1 Content-free invariant enforced at the schema level: no field holds
 raw edit data or document content (C1). Document this invariant in the schema
 and in code review checklists.
 N2 Encryption at rest; access scoped per professor/institution.
-N3 RosterMember and identity data limited to the minimum needed for author-
-ID resolution.
+N3 Group data is a count (expected_size), never an identity list — the
+database holds no named-student data anywhere (decided 2026-06-29).
 N4 Disclosure records immutable once written (append-only audit trail) —
 edits create new records rather than overwriting.
 N5 SavedSummary supports hard delete (professor purge).
@@ -156,5 +166,7 @@ Out of Scope
 
 Storing raw mutation streams or character-level history
 Storing document content of any kind
+Storing an actual list of named students anywhere (decided 2026-06-29 — group
+size is a count, never an identity list)
 Any table/collection that would make GroupSync a processor of student
 education records

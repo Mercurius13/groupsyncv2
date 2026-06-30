@@ -6,7 +6,7 @@ import {
   fetchDocumentStructure,
   sectionsFromHeadings,
   type DocsApiStructuralElement,
-} from "./docs-api";
+} from ".";
 
 describe("documentsApiUrl", () => {
   it("requests only structural metadata fields, never paragraph text", () => {

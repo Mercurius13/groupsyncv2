@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractDocId } from "./doc-id";
+import { extractDocId } from "./utils";
 
 describe("extractDocId", () => {
   it("extracts the doc id from an /edit URL", () => {

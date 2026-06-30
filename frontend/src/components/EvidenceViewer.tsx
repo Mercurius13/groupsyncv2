@@ -55,7 +55,7 @@ export function EvidenceViewer({ summary }: { summary: ContentStrippedSummary })
           <tbody>
             {summary.authorCounts.map((a) => (
               <tr key={a.authorId}>
-                <td>{a.authorId}</td>
+                <td>{a.authorName ? `${a.authorName} (${a.authorId})` : a.authorId}</td>
                 <td>{a.originatedChars}</td>
                 <td>{a.totalSurvivingChars}</td>
                 <td>{(a.originShare * 100).toFixed(1)}%</td>
