@@ -69,13 +69,6 @@ button {
   padding: 24px;
 }
 
-.inline-form {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin: 12px 0;
-}
-
 input,
 textarea {
   font: inherit;
@@ -83,16 +76,6 @@ textarea {
   border: 1px solid #dadce0;
   border-radius: 6px;
   width: 100%;
-}
-
-.record-list {
-  list-style: none;
-  padding: 0;
-}
-
-.record-list li {
-  padding: 8px 0;
-  border-bottom: 1px solid #eee;
 }
 
 section {
@@ -114,40 +97,21 @@ section {
   background: #fafafa;
 }
 
-.evidence-section {
-  margin-bottom: 12px;
-}
-
-.signals-block {
-  background: #fdecea;
-  border: 1px solid #f5c2c0;
-  border-radius: 6px;
-  padding: 10px 14px;
-}
-
-table {
-  border-collapse: collapse;
-  width: 100%;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 4px 10px;
-  border-bottom: 1px solid #eee;
-}
-
-.preview-box,
-.saved-summary {
+.license-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
   border: 1px solid #dadce0;
   border-radius: 8px;
-  padding: 16px;
-  margin-top: 12px;
+  background: #fff;
+  padding: 10px 16px;
+  margin-bottom: 20px;
 }
 
-.saved-summary-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
+.license-status-active {
+  color: #188038;
+  font-size: 0.9em;
+  text-transform: capitalize;
 }
+

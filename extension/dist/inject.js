@@ -1,10 +1,11 @@
 "use strict";
 (() => {
-  // src/content/inject.ts
+  // src/inject.ts
   (() => {
     const URL_PATTERNS = [
       [/\/document\/d\/[^/]+\/save(\?|$)/, "save"],
-      [/\/document\/d\/[^/]+\/bind(\?|$)/, "bind"]
+      [/\/document\/d\/[^/]+\/bind(\?|$)/, "bind"],
+      [/\/document\/(?:u\/\d+\/)?d\/[^/]+\/revisions\/tiles(\?|$)/, "tiles"]
     ];
     function classify(url) {
       for (const [pattern, kind] of URL_PATTERNS) {
@@ -25,7 +26,7 @@
         console.warn("[GroupSync inject] postCapture failed", err);
       }
     }
-    console.log("[GroupSync inject] active, watching for save/bind requests");
+    console.log("[GroupSync inject] active, watching for save/bind/tiles requests");
     const tracked = /* @__PURE__ */ new WeakMap();
     const OriginalXHR = window.XMLHttpRequest;
     const originalOpen = OriginalXHR.prototype.open;
@@ -42,6 +43,24 @@
         this.addEventListener("loadend", () => postCapture(info.kind, info.url, requestBody, this.responseText));
       }
       return originalSend.call(this, body);
+    };
+    function fetchUrlOf(input) {
+      if (typeof input === "string") return input;
+      if (input instanceof URL) return input.toString();
+      return input.url;
+    }
+    const originalFetch = window.fetch;
+    window.fetch = function(input, init) {
+      const url = fetchUrlOf(input);
+      const kind = classify(url);
+      const promise = originalFetch.call(this, input, init);
+      if (!kind) return promise;
+      const absolute = toAbsoluteUrl(url);
+      const requestBody = kind === "save" && typeof init?.body === "string" ? init.body : null;
+      return promise.then((res) => {
+        res.clone().text().then((responseText) => postCapture(kind, absolute, requestBody, responseText)).catch((err) => console.warn("[GroupSync inject] fetch body read failed", err));
+        return res;
+      });
     };
   })();
 })();

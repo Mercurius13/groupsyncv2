@@ -1,0 +1,325 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>GroupSync Evidence Panel</title>
+    <style>
+      /* Tokens. Light values on :root, dark redefined under prefers-color-scheme
+         — the categorical series slots are separately-stepped hues for each
+         surface, not an automatic flip, and both sets are validated for
+         colorblind separation and contrast against their own surface. */
+      :root {
+        color-scheme: light;
+        --surface: #fcfcfb;
+        --surface-raised: #ffffff;
+        --surface-sunken: #f4f3f0;
+        --ink: #0b0b0b;
+        --ink-2: #52514e;
+        --ink-muted: #898781;
+        --hairline: #e1e0d9;
+        --rule: #c3c2b7;
+        --accent: #1c5cab;
+        --accent-ink: #ffffff;
+        --accent-wash: #e8f0fe;
+        --accent-text: #1c5cab;
+        --warn-wash: #fdf3e3;
+        --warn-edge: #f0dcb4;
+        --warn-mark: #b06f00;
+        --series-1: #2a78d6;
+        --series-2: #eb6834;
+        --series-3: #1baf7a;
+        --series-4: #eda100;
+        --series-5: #e87ba4;
+        --series-6: #008300;
+        --series-other: #898781;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --surface: #1a1a19;
+          --surface-raised: #232322;
+          --surface-sunken: #131312;
+          --ink: #ffffff;
+          --ink-2: #c3c2b7;
+          --ink-muted: #898781;
+          --hairline: #2c2c2a;
+          --rule: #383835;
+          --accent: #3987e5;
+          --accent-ink: #0b0b0b;
+          --accent-wash: #16283f;
+          --accent-text: #86b6ef;
+          --warn-wash: #2b2213;
+          --warn-edge: #4a3c20;
+          --warn-mark: #eda100;
+          --series-1: #3987e5;
+          --series-2: #d95926;
+          --series-3: #199e70;
+          --series-4: #c98500;
+          --series-5: #d55181;
+          --series-6: #008300;
+          --series-other: #898781;
+        }
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; }
+      body {
+        font: 13px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        width: 680px;
+        max-height: 600px;
+        overflow-y: auto;
+        color: var(--ink);
+        background: var(--surface);
+      }
+
+      /* ---- shell ---- */
+      .gs-header {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding: 14px 18px 12px;
+        background: var(--surface);
+        border-bottom: 1px solid var(--hairline);
+      }
+      .gs-wordmark { font-size: 14px; font-weight: 650; letter-spacing: -0.1px; }
+      .gs-tagline { font-size: 11.5px; color: var(--ink-muted); }
+      .gs-body { padding: 4px 18px 20px; }
+
+      .gs-panel { margin-top: 18px; }
+      .gs-heading {
+        font-size: 10.5px;
+        font-weight: 650;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        color: var(--ink-muted);
+        margin: 0 0 8px;
+      }
+      .gs-status { font-size: 12px; color: var(--ink-2); margin: 10px 0; }
+      .gs-caption { font-size: 11.5px; color: var(--ink-muted); margin: -2px 0 10px; max-width: 62ch; }
+      .gs-empty { padding: 24px 0 8px; }
+      .gs-empty h2 { font-size: 14px; margin: 0 0 6px; font-weight: 600; }
+      .gs-empty p { font-size: 12.5px; color: var(--ink-2); margin: 0 0 14px; max-width: 52ch; }
+
+      /* ---- controls ---- */
+      .gs-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      .gs-button {
+        font: inherit;
+        font-size: 12.5px;
+        padding: 6px 12px;
+        border: 1px solid var(--rule);
+        border-radius: 7px;
+        background: var(--surface-raised);
+        color: var(--ink);
+        cursor: pointer;
+      }
+      .gs-button:hover:not(:disabled) { border-color: var(--ink-muted); }
+      .gs-button:disabled { cursor: default; opacity: 0.55; }
+      .gs-button-primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-ink);
+        font-weight: 550;
+      }
+      .gs-button-primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+      /* ---- data-source strip ---- */
+      .gs-sources { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .gs-source {
+        border: 1px solid var(--hairline);
+        border-radius: 9px;
+        background: var(--surface-raised);
+        padding: 10px 12px;
+      }
+      .gs-source-label {
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--ink-muted);
+      }
+      .gs-source-value { font-size: 12.5px; margin: 2px 0 8px; }
+      .gs-source-value.gs-pending { color: var(--ink-2); }
+      .gs-source-ok::before {
+        content: "●";
+        color: var(--series-3);
+        font-size: 9px;
+        vertical-align: 1.5px;
+        margin-right: 5px;
+      }
+
+      /* ---- contribution split (stacked part-to-whole bar) ---- */
+      .gs-split-bar {
+        display: flex;
+        gap: 2px;              /* surface gap separates segments — never a border */
+        height: 12px;
+        margin-bottom: 12px;
+      }
+      .gs-split-seg { min-width: 2px; background: var(--series-other); }
+      .gs-split-seg:first-child { border-radius: 4px 0 0 4px; }
+      .gs-split-seg:last-child { border-radius: 0 4px 4px 0; }
+      .gs-legend { display: flex; flex-direction: column; gap: 3px; }
+      .gs-legend-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        font-size: 12.5px;
+      }
+      .gs-legend-row .gs-legend-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .gs-legend-share { font-variant-numeric: tabular-nums; font-weight: 600; }
+      .gs-legend-chars { font-variant-numeric: tabular-nums; color: var(--ink-muted); font-size: 11.5px; min-width: 9ch; text-align: right; }
+      .gs-swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 3px;
+        flex: none;
+        background: var(--series-other);
+        align-self: center;
+      }
+      .gs-s1 { background: var(--series-1); }
+      .gs-s2 { background: var(--series-2); }
+      .gs-s3 { background: var(--series-3); }
+      .gs-s4 { background: var(--series-4); }
+      .gs-s5 { background: var(--series-5); }
+      .gs-s6 { background: var(--series-6); }
+      .gs-s0 { background: var(--series-other); }
+
+      /* ---- author cards ---- */
+      .gs-author-card {
+        border: 1px solid var(--hairline);
+        border-radius: 9px;
+        background: var(--surface-raised);
+        padding: 10px 14px 4px;
+        margin-bottom: 8px;
+      }
+      .gs-author-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding-bottom: 2px;
+      }
+      .gs-author-name { font-weight: 600; font-size: 13px; flex: 1; }
+      .gs-author-share { font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 600; }
+      .gs-author-share small { font-weight: 400; color: var(--ink-muted); font-size: 11px; margin-left: 3px; }
+      .gs-flags { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 2px; }
+      .gs-flag {
+        font-size: 10.5px;
+        padding: 1px 7px;
+        border-radius: 20px;
+        background: var(--warn-wash);
+        border: 1px solid var(--warn-edge);
+        color: var(--ink);
+      }
+      .gs-flag::before { content: "▲ "; color: var(--warn-mark); font-size: 8px; }
+
+      /* ---- narration lists ---- */
+      .gs-narration ul { margin: 4px 0 8px; padding-left: 17px; }
+      .gs-narration li { margin-bottom: 3px; color: var(--ink-2); font-size: 12.5px; }
+      .gs-narration li::marker { color: var(--rule); }
+      .gs-rule-id {
+        color: var(--ink-muted);
+        font-size: 10px;
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        white-space: nowrap;
+      }
+
+      /* ---- sections ---- */
+      .gs-section-details { border-bottom: 1px solid var(--hairline); padding: 5px 0; }
+      .gs-section-details:last-child { border-bottom: 0; }
+      .gs-section-details summary {
+        cursor: pointer;
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        font-size: 12.5px;
+      }
+      .gs-section-details summary::marker { color: var(--rule); }
+      .gs-section-title { font-weight: 600; }
+      .gs-glance { color: var(--ink-muted); font-size: 11.5px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .gs-form-tag {
+        font-size: 10px;
+        color: var(--accent-text);
+        background: var(--accent-wash);
+        border-radius: 4px;
+        padding: 1px 6px;
+        white-space: nowrap;
+      }
+
+      /* ---- notice panels ---- */
+      .gs-signals, .gs-exclusions, .gs-setup {
+        border: 1px solid var(--hairline);
+        border-radius: 9px;
+        padding: 10px 14px;
+        background: var(--surface-raised);
+      }
+      .gs-signals { background: var(--warn-wash); border-color: var(--warn-edge); }
+      .gs-setup p { margin: 0 0 8px; font-size: 12.5px; color: var(--ink-2); }
+      .gs-setup p strong { color: var(--ink); }
+      .gs-name-row, .gs-grader-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 3px 0;
+      }
+      .gs-grader-row { cursor: pointer; }
+      .gs-author-id {
+        flex: 1;
+        font-size: 11.5px;
+        color: var(--ink-2);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .gs-author-id code {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 10.5px;
+        color: var(--ink-muted);
+      }
+      .gs-name-input {
+        font: inherit;
+        font-size: 12.5px;
+        width: 190px;
+        padding: 4px 8px;
+        border: 1px solid var(--rule);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--ink);
+      }
+      .gs-setup .gs-button { margin-top: 8px; }
+
+      /* ---- footer & debug ---- */
+      .gs-disclaimer {
+        font-size: 11.5px;
+        color: var(--ink-2);
+        border-top: 1px solid var(--hairline);
+        margin-top: 20px;
+        padding-top: 10px;
+      }
+      .gs-debug { margin-top: 12px; }
+      .gs-debug summary { cursor: pointer; color: var(--ink-muted); font-size: 11.5px; }
+      .gs-json {
+        margin: 8px 0 0;
+        max-height: 420px;
+        overflow: auto;
+        background: var(--surface-sunken);
+        color: var(--ink-2);
+        border: 1px solid var(--hairline);
+        border-radius: 8px;
+        padding: 12px 14px;
+        font: 11px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="gs-header">
+      <span class="gs-wordmark">GroupSync</span>
+      <span class="gs-tagline">Authorship evidence — not a score</span>
+    </header>
+    <div id="gs-root" class="gs-body">
+      <p class="gs-status">Loading…</p>
+    </div>
+    <script type="module" src="../dist/popup.js"></script>
+  </body>
+</html>

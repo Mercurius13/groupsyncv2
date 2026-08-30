@@ -1,20 +1,13 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { RequireAuth } from "./AuthContext";
 import { Layout } from "./components/Layout";
-import { AssignmentPage } from "./pages/AssignmentPage";
+import { Account } from "./pages/Account";
 import { AuthCallback } from "./pages/AuthCallback";
-import { ClassPage } from "./pages/ClassPage";
-import { Dashboard } from "./pages/Dashboard";
-import { GroupPage } from "./pages/GroupPage";
 import { Login } from "./pages/Login";
 
-function Protected({ children }: { children: React.ReactNode }) {
-  return (
-    <RequireAuth>
-      <Layout>{children}</Layout>
-    </RequireAuth>
-  );
-}
+// Pivoted 2026-07-03: the frontend is onboarding + account/plan only.
+// Class/assignment/group pages and the evidence viewer were removed —
+// Canvas organizes classes, and analysis renders in the extension popup.
 
 export function App() {
   return (
@@ -22,15 +15,15 @@ export function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/auth/callback" element={<AuthCallback />} />
-        <Route path="/" element={<Protected><Dashboard /></Protected>} />
-        <Route path="/classes/:classId" element={<Protected><ClassPage /></Protected>} />
         <Route
-          path="/classes/:classId/assignments/:assignmentId"
-          element={<Protected><AssignmentPage /></Protected>}
-        />
-        <Route
-          path="/classes/:classId/assignments/:assignmentId/groups/:groupId"
-          element={<Protected><GroupPage /></Protected>}
+          path="/"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Account />
+              </Layout>
+            </RequireAuth>
+          }
         />
       </Routes>
     </BrowserRouter>

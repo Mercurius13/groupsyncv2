@@ -3,16 +3,14 @@
   "name": "GroupSync — Doc Authorship Evidence",
   "version": "0.1.0",
   "description": "Local-only authorship evidence for shared Google Docs. Grading evidence, not a scoring tool.",
-  "permissions": ["storage", "activeTab", "scripting", "identity"],
+  "permissions": ["storage", "activeTab", "identity"],
   "host_permissions": [
     "https://docs.google.com/*",
-    "https://people.googleapis.com/*",
-    "https://docs.googleapis.com/*",
-    "https://www.googleapis.com/*"
+    "https://docs.googleapis.com/*"
   ],
   "action": {
     "default_title": "GroupSync Evidence Panel",
-    "default_popup": "src/ui/popup.html"
+    "default_popup": "src/popup.html"
   },
   "background": {
     "service_worker": "dist/background.js",

@@ -1,24 +1,14 @@
-/**
- * Runs in the page's own MAIN world (not the extension's isolated world) so
- * it can patch the page's real XMLHttpRequest before Google Docs' own JS
- * starts using it. Captures only request/response data for the two
- * confirmed-real internal collaboration endpoints — save (outbound) and
- * bind (inbound realtime push channel) — and posts it to the page (picked
- * up by content/index.ts, the isolated-world relay, and forwarded to the
- * background script). Never touches any other request.
- *
- * Both endpoints are confirmed XHR/BrowserChannel transport (TYPE=xmlhttp
- * present in their query string) from real captured traffic — see
- * src/capture/wire-types.ts.
- */
 (() => {
-  type Kind = "save" | "bind";
+  type Kind = "save" | "bind" | "tiles";
 
   const URL_PATTERNS: [RegExp, Kind][] = [
     [/\/document\/d\/[^/]+\/save(\?|$)/, "save"],
     [/\/document\/d\/[^/]+\/bind(\?|$)/, "bind"],
+    [/\/document\/(?:u\/\d+\/)?d\/[^/]+\/revisions\/tiles(\?|$)/, "tiles"],
   ];
 
+  /** Matches a request URL against the watched internal-endpoint patterns.
+   *  Returns the endpoint kind, or null for every other request. */
   function classify(url: string): Kind | null {
     for (const [pattern, kind] of URL_PATTERNS) {
       if (pattern.test(url)) return kind;
@@ -26,13 +16,14 @@
     return null;
   }
 
-  /** XHR.open accepts URLs relative to the page — resolve to absolute before
-   *  this ever leaves the page context, so every downstream consumer can
-   *  rely on it always being a full URL. */
+  /** Resolves a possibly page-relative request URL to an absolute URL so
+   *  downstream consumers can always parse it. */
   function toAbsoluteUrl(url: string): string {
     return new URL(url, window.location.href).toString();
   }
 
+  /** Posts one captured request/response to the isolated-world relay via
+   *  window.postMessage, which forwards it to the background worker. */
   function postCapture(kind: Kind, url: string, requestBody: string | null, responseText: string): void {
     try {
       window.postMessage(
@@ -44,7 +35,7 @@
     }
   }
 
-  console.log("[GroupSync inject] active, watching for save/bind requests");
+  console.log("[GroupSync inject] active, watching for save/bind/tiles requests");
 
   const tracked = new WeakMap<XMLHttpRequest, { url: string; kind: Kind }>();
   const OriginalXHR = window.XMLHttpRequest;
@@ -65,4 +56,30 @@
     }
     return originalSend.call(this, body as never);
   };
+
+  /** Resolves the request URL from the several shapes fetch() accepts (string,
+   *  URL, or Request), so the same classifier works for XHR and fetch. */
+  function fetchUrlOf(input: RequestInfo | URL): string {
+    if (typeof input === "string") return input;
+    if (input instanceof URL) return input.toString();
+    return input.url;
+  }
+
+  const originalFetch = window.fetch;
+  window.fetch = function (this: unknown, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const url = fetchUrlOf(input);
+    const kind = classify(url);
+    const promise = originalFetch.call(this, input as RequestInfo, init);
+    if (!kind) return promise;
+    const absolute = toAbsoluteUrl(url);
+    const requestBody = kind === "save" && typeof init?.body === "string" ? init.body : null;
+    return promise.then((res) => {
+      res
+        .clone()
+        .text()
+        .then((responseText) => postCapture(kind, absolute, requestBody, responseText))
+        .catch((err) => console.warn("[GroupSync inject] fetch body read failed", err));
+      return res;
+    });
+  } as typeof window.fetch;
 })();

@@ -1,139 +1,158 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) working in this repository.
 
----
+## What GroupSync is
 
-## Project: GroupSync
+An **evidence tool** for professors grading collaborative Google Docs work — explicitly *not* a
+scoring tool. It reconstructs a shared doc's edit history, attributes every surviving character to
+an origin author, and renders a plain-language, per-person breakdown with a named rule ID behind
+every sentence. The professor applies all judgment; the tool never issues a verdict.
 
-An **evidence tool** for professors grading collaborative Google Docs work — not a scoring tool.
-It attributes authorship at the character level inside a browser extension (local-only, never
-transmitted) and produces a plain-language, per-person breakdown the professor uses as evidence,
-applying all judgment themselves.
+## Architecture (fat extension / local-only analysis)
 
-**`HANDOVER.md` is the source of truth for architecture and non-negotiable constraints (C1–C5)
-and overrides anything below if they conflict.** Read it first. `EXTENSION.MD`, `BACKEND.md`,
-`FRONTEND.md`, `DATABASE.md` hold the four per-component specs (functional requirements, current
-state, and a remaining-work list each) — `EXTENSION.MD` is NOT a duplicate of `HANDOVER.md`, it's
-the extension's own detailed F1–F8 requirements doc, parallel to the other three.
-
-This is a **fat-extension / local-analysis** architecture (pivoted from an earlier thin-client /
-server-side-scoring design — that old design is dead, do not resurrect it):
-
-| Component | Role | Touches student edit data? |
+| Component | Role | Sees student edit data? |
 |---|---|---|
-| **Extension** (`extension/`) | The analysis engine: capture + replay + structure + signals + narration + identity resolution. Runs entirely in the professor's browser. Never connects to our own backend, in either direction. | YES — locally only, never transmitted |
-| **Frontend** (`frontend/`) | Management dashboard + evidence viewer. Account, licensing, class/assignment/group setup (group size as a count only, never a named roster), disclosure. Displays evidence the extension produced. | NO raw data — only opt-in, content-stripped summaries |
-| **Backend** (`backend/`) | Identity, licensing/billing, class/group metadata + seat counts, disclosure records. Content-free, and never stores an actual list of named students. | NO |
-| **Database** | Accounts, licenses, class/group metadata, disclosure records, optional content-stripped summaries. | NO raw mutations, ever |
+| `extension/` | The entire analysis engine: capture → replay → structure → signals → narration → export. Runs in the professor's browser. **Never talks to our backend, in either direction.** | Yes — locally, in `chrome.storage.session` only |
+| `backend/` | FastAPI. Two jobs only: professor Google-OAuth accounts, and licensing/entitlement. | No |
+| `frontend/` | Vite + React. Login, then one page: account, plan, install instructions, disclosure template. | No |
+| MongoDB | `professors` and `licenses` collections. Nothing else. | No |
 
-### Tech Stack
-- **Extension**: TypeScript, esbuild, vitest, Chrome Manifest V3 (`extension/`)
-- **Frontend**: Vite + React + TypeScript + react-router (decided 2026-06-29, not Next.js)
-- **Backend**: FastAPI (Python 3.14, venv already at `backend/.venv`)
-- **Database**: MongoDB
-- **Auth**: Google OAuth 2.0 (professors only — students are never accounts; name resolution
-  happens entirely inside the extension via People API + Drive permissions, never via the backend)
+The class/assignment/group/roster/evidence-viewer layer that used to live in the backend and
+frontend was **deleted in the 2026-07-03 pivot** (see `git show daa2975`, `3ac3039`). Canvas owns
+class organization; the extension popup owns analysis display. Do not resurrect either.
 
----
+## Non-negotiable constraints
 
-## Current State (as of 2026-06-29)
+These are carried in code comments as `C1`–`C5` / `N1` / `F…` / `E…` tags. Keep the tags when you
+touch tagged code; they are the audit trail.
 
-Full per-component detail (purpose, functional requirements, current state, remaining work) now
-lives in each component's own doc — `EXTENSION.MD`, `BACKEND.md`, `FRONTEND.md`, `DATABASE.md`.
-This section is a summary; check the component doc before assuming something below is stale.
+- **C1 — Local-only residency.** Raw mutation data and document content are processed and discarded
+  inside the extension. Never transmitted to our backend, never persisted in raw form, never sent to
+  any cloud service or LLM. Op/name/structure state lives in `chrome.storage.session`, which clears
+  on browser close. The only export is user-initiated, content-stripped, and goes to the clipboard —
+  there is deliberately **no server-side destination** for it.
+- **C2 — Authorization.** Access derives from the professor's existing Edit permission on the doc
+  plus disclosure to students, not from a student consent checkbox. Graders/TAs are excluded from
+  assessment rather than silently counted.
+- **C3 — Deterministic, auditable attribution.** Every user-visible claim carries a `ruleId`
+  (`RuledSentence` in `narration.ts`) traceable to a named rule. No black-box inference anywhere in
+  the attribution or narration path.
+- **C4 — Capture is load-bearing.** The pipeline needs the *complete ordered mutation log from doc
+  creation*, taken from Google's internal collaboration endpoints (the Draftback approach) — **not**
+  by diffing rendered version-history snapshots.
+- **C5 — Conservative "no role".** Never state that a student contributed nothing. Low/absent edits
+  are reported as what the data does and does not show, always with the off-document caveat.
 
-### Extension — capture through export all real and tested; identity resolution had a real bug, now fixed
-- ✅ Capture (live `/save` + `/bind`, confirmed against real traffic) and retroactive history
-  (`.../revisions/load`, confirmed against a real response 2026-06-28 — see `ME.MD`'s resolved
-  envelope item: the real shape is `{chunkedSnapshot, changelog}`, only `changelog` matters).
-- ✅ Replay, structure detection (newline paragraphs OR real Docs API heading/table ranges — F5.1-
-  F5.4), 7 named signals (paste/quarantine/integrator/late-concentration/narration-phrase/
-  revision-depth/concurrent-edit-boundary), narration with a named rule ID per sentence (F7.2) and
-  form-aware hedging when Docs structure is known (F7.3), content-stripped export — all wired into
-  the popup, 129 tests passing.
-- ⚠️→✅ **Name resolution had a real, confirmed bug, now fixed.** Clicking "Resolve author names"
-  completed the OAuth flow but resolved nothing — People API only resolves the professor's own
-  contacts/connections, not an arbitrary doc collaborator (the common classroom case). Fixed with
-  `extension/src/identity/drive.ts`: falls back to the Drive API's file-permissions list for
-  anything People API didn't resolve. New OAuth scope, new host_permission, explicit C1 addition
-  in `HANDOVER.md`. **Still unconfirmed**: that a Drive permission's `id` equals the collab
-  stream's author ID — the new load-bearing assumption (see `ME.MD`).
-- ✅ Section labels in exports now use real heading text (e.g. "Executive Summary") when a section
-  has one, instead of unusable "Paragraph N" placeholders — required a scoped, documented
-  exception to C1 (short heading/title text only, never prose body; see `HANDOVER.md`).
-- ❌ **F4.2 (non-roster authorship) and F7.5 (missing roster member) were built last session, then
-  REMOVED by decision 2026-06-29.** They required a professor-typed "expected roster" textarea in
-  the popup, which (a) was confusing — looked related to the unrelated, automatic People-API name
-  resolution — and (b) provided little real value. No replacement input source is planned; the
-  extension-backend boundary stays closed regardless (C1).
-- ⚠️ Other interpretive gaps still worth your read (see `EXTENSION.MD`/`ME.MD`): F6.6's concurrency
-  signal is a "boundary" flag, not literal per-character "shared" attribution (the confirmed real
-  data format gives every command exactly one author). F5's Docs API integration doesn't detect
-  inline equations or distinguish lists from prose. F5.5 (self-claimed sections) and F8.1/F8.3
-  (fixture generator) remain genuinely unimplemented.
+## Extension pipeline
 
-### Backend, Frontend, Database — F1/F3(scoped down)/F4/F5 built and browser-verified; F2 (licensing) deferred
-- **Backend**: rebuilt to spec, then **F3 scoped down further 2026-06-29**: `roster.py` and the
-  `RosterMember` model (an actual per-group list of named students) were built, verified, then
-  REMOVED by decision — name resolution turned out to belong entirely in the extension (People
-  API + Drive fallback above), so the backend never needed to store student identities at all.
-  `groups.expected_size` (a plain count) replaced it, for the professor's reference and license
-  seat-tracking only. Dead pre-pivot routers (`admin`/`invites`/`student`/`submissions`/`tasks`)
-  also deleted. `auth`/`classes`/`assignments`/`groups`/`disclosure`/`summaries` implement
-  F1/F3/F4/F5, verified against real MongoDB. **F2 (licensing) explicitly deferred — not
-  started.** See `BACKEND.md`.
-- **Frontend**: rebuilt from the bare Vite scaffold into Vite + React + TS + react-router, then
-  **its roster CRUD/CSV-import UI removed 2026-06-29** along with the backend feature it managed
-  — `GroupPage.tsx` now has a single `expected_size` number field instead. F1 (login), F2
-  (class/assignment/group setup), F3 (disclosure setup), F4 (evidence viewer), F5 (evidence
-  intake) verified end-to-end in a real headless browser against the real backend. See
-  `FRONTEND.md`.
-- **Database**: rebuilt — pre-pivot collections dropped (no real data existed to preserve); real
-  collections now match E2/E4/E5/E6/E8/E9. **E7 RosterMember removed 2026-06-29** (see Backend
-  above) — `groups` carries `expected_size` instead. E1 (Institution) and E3 (License) don't exist
-  yet. See `DATABASE.md`.
+Flat module layout in [extension/src/](extension/src/) (flattened from directories in `3ac3039` — no
+subfolders, no `index.ts` barrels; keep it that way).
 
----
+**Ingest**
+1. [inject.ts](extension/src/inject.ts) — MAIN-world content script at `document_start`. Monkey-patches
+   `XMLHttpRequest.open/send` and `window.fetch`, classifies URLs as `save` / `bind` / `tiles`, and
+   `postMessage`s the request body + response text to the page.
+2. [content.ts](extension/src/content.ts) — isolated-world relay; forwards those messages to the worker.
+3. [background.ts](extension/src/background.ts) — service worker. Message router and the only owner of
+   session state, keyed `groupsync-{ops,names,excluded,structure}-<docId>`.
 
-## Remaining Work (in dependency order — do not skip ahead per HANDOVER.md's build order)
+**Parse**
+4. [capture.ts](extension/src/capture.ts) — `/save` form body (`bundles` → `is`/`ds`/`mlti` commands,
+   attributed to the local `ouid`) and `/bind` push channel (length-prefixed `<len>\n<json>` chunks,
+   server-attributed). Only `is`/`ds`/`mlti` survive; structural commands are dropped.
+5. [history.ts](extension/src/history.ts) — retroactive `/revisions/load` paging (1000 revs/page), max
+   revision found by doubling then binary search, `)]}'` XSSI prefix stripped, `userMap` harvested.
+   A full-history fetch **replaces** stored ops (appending would duplicate live-captured ones).
+6. [tiles.ts](extension/src/tiles.ts) — `/revisions/tiles` `userMap` → real names + anonymous IDs, in the
+   same authorId namespace as the changelog.
 
-> Manual setup steps and things that need live validation against a real Google account/doc are
-> tracked in `ME.MD`. Per-component task detail lives in each component's own doc (linked below)
-> — this list is the cross-component sequencing, not a restatement of every item.
+**Analyse**
+7. [replay.ts](extension/src/replay.ts) — deterministic replay from an empty doc into `LiveChar[]`
+   (per-char `charId` + origin `authorId`), plus an actor→target deletion log. Unobserved positions
+   are padded as null-origin chars. Inserts split by UTF-16 code unit (`split("")`, not
+   `Array.from`) so emoji don't shift alignment.
+8. [structure.ts](extension/src/structure.ts) — opt-in Docs API `documents.get` with a fields mask that
+   requests **structure only, never text**; classifies elements and segments the char array into
+   weighted sections (table ×3, numeric ×1.5, list ×1.25, prose/heading ×1). Falls back to newline
+   paragraphs, unweighted, until the structure fetch runs.
+9. [signals.ts](extension/src/signals.ts) — named signals with exported thresholds: paste, quarantined
+   high-churn session, integrator pattern, late concentration, revision depth, concurrent-edit
+   boundary; plus exclusion application and per-author contribution profiles.
+10. [narration.ts](extension/src/narration.ts) — `RuledSentence[]` per section, per author, per signal.
+11. [export.ts](extension/src/export.ts) — content-stripped summary (narration text, counts, short
+    heading labels — never prose body or raw mutations).
+12. [popup.ts](extension/src/popup.ts) — orchestrates the above in `render()` and builds the UI.
+    Panels are **built and appended in reading order**, never prepended ad hoc.
+    [popup.html](extension/src/popup.html) holds all styling as CSS custom properties: light values on
+    `:root`, dark redefined under `prefers-color-scheme`. The six `--series-*` slots are a validated
+    categorical palette (separately stepped per surface for contrast and colorblind separation — not
+    an automatic flip). `authorColorSlots()` assigns them **by an author's first appearance in the
+    mutation log**, so naming or excluding someone never repaints anybody else; authors past six
+    share the neutral slot. Don't reassign colors by rank or share.
 
-1. ✅ ~~Extension capture + retroactive history (C4)~~ — done and confirmed against real traffic,
-   including the `revisions/load` envelope (`ME.MD`'s resolved item).
-2. ✅ ~~Author-name resolution~~ — People API alone confirmed broken for non-contacts (live test);
-   fixed with a Drive-permissions fallback (`extension/src/identity/drive.ts`). **Still open** (see
-   `ME.MD`): confirm live that a Drive permission's `id` actually equals the collab-stream author ID.
-3. ✅ ~~Extension structure + signals + narration + export~~ — done, with two features (F4.2, F7.5)
-   built then deliberately removed (see `EXTENSION.MD`). **F5.5 and F8.1/F8.3 remain genuinely
-   unimplemented**; several others need live validation, not more code — see `EXTENSION.MD`'s
-   Current State / Remaining Work and `ME.MD`.
-4. ✅ ~~Backend rebuild (F1/F3/F4/F5)~~ — done, verified against real MongoDB, **then F3 scoped
-   down 2026-06-29** (counts only, no named roster — see `BACKEND.md`). **F2 (licensing)
-   explicitly deferred** — needs a payment processor decision first (see `ME.MD`).
-5. ✅ ~~Database rebuild~~ — done in lockstep with the backend, including the F3 scope-down.
-6. ✅ ~~Frontend rebuild (F1-F5)~~ — done, verified end-to-end in a real browser, **then its roster
-   UI removed in lockstep with the backend**. See `FRONTEND.md`'s Remaining Work for polish items
-   (license display once F2 exists, long-evidence-page UX, a real design pass).
-7. **Institutional/compliance step (C2)**: before running on any real graded class, confirm
-   NJIT (or relevant institution) student-data sign-off — this is a gate, not a code task, but
-   don't build features that assume it's already cleared.
+**Pipeline order in `render()` matters**: replay → segment → *apply exclusions* → footprints →
+profiles → narrate. Exclusions are applied POST-replay to sections and op-derived signals, never by
+filtering the mutation log (which would corrupt replay positions).
 
----
+### Behaviour worth not breaking
 
-## Coding Principles
+- **Results are gated on names.** If no author names have been retrieved, the popup shows a prompt
+  instead of analysis — misattribution is worse than no output.
+- **Any unnamed author is assumed to be the grader** (`graderExcludedAuthorIds` in `signals.ts`) and
+  is excluded from assessment. The account running the extension always appears unnamed in version
+  history, so this covers both authors Google reports as anonymous (`null`) and authors no response
+  named at all (absent from the map) — the two must stay equivalent here. The professor names an
+  unnamed author in the roster panel to promote them back to a student, and can additionally check
+  named co-instructors/TAs to exclude them.
+- **Tables are one collapsed unit credited by winner-take-all cell ownership** (`buildTableSection`),
+  ties broken toward the earliest origin. This deliberately protects the person who *built* a table
+  from a later reviser. Do not switch it back to raw character counts over the table span.
 
-### 1. Think Before Coding
-State assumptions explicitly before writing code. If a request has multiple valid interpretations, present them and ask. Push back when the proposed approach seems wrong. If requirements are unclear, stop and ask rather than guess.
+### Open assumption to be careful around
 
-### 2. Simplicity First
-Write the minimum code that satisfies the request. No features beyond what was asked, no abstractions built for single-use code, no "flexibility" that wasn't requested, no error handling for scenarios that can't happen given the context.
+`segmentByElements` slices the replayed `LiveChar[]` (mutation-stream `ibi`/`si`/`ei` space) using
+Docs API `startIndex`/`endIndex`. **That the two index spaces coincide is unvalidated.** It lines up
+for plain text, but tables burn structural index positions (1 per table + 1 per row + 1 per cell) and
+the mutation parser drops structural commands, so they exist only as padded null slots. Verify on a
+real table doc via the popup's Debug block → `structurePreview.reconstructedText` before trusting
+table attribution; if text is shifted, add a running-offset correction walking `body.content`. Also
+note `chunkedSnapshot` is ignored — if a doc's history doesn't start empty, all offsets drift.
 
-### 3. Surgical Changes
-Don't improve adjacent code. Don't refactor things that aren't broken. Match the existing style of the file you're editing. If you notice pre-existing dead code, mention it — don't silently delete it. Only remove imports/variables/functions that *your* changes made unused.
+## Commands
 
-### 4. Goal-Driven Execution
-Transform tasks into verifiable goals before starting. For multi-step tasks, state a brief plan first. Don't keep going past what was asked.
+```bash
+# Extension — dist/ IS COMMITTED (load-unpacked needs it); rebuild after editing src/
+cd extension && npm run build      # esbuild → dist/{background,content,inject,popup}.js
+cd extension && npm test           # vitest, 164 tests
+cd extension && npm run typecheck  # tsc --noEmit
+
+# Backend (venv already at backend/.venv)
+cd backend && .venv/bin/uvicorn main:app --reload --port 8000
+
+# MongoDB — binary tarball, NOT Homebrew (brew won't install here)
+~/.local/groupsync-mongo/mongodb-macos-aarch64--8.0.24/bin/mongod \
+  --dbpath ~/.local/groupsync-mongo/data --fork --logpath ~/.local/groupsync-mongo/mongod.log
+kill -TERM $(pgrep -x mongod)      # `--shutdown` no longer exists in Mongo 8
+# no mongosh: use `cd backend && .venv/bin/python`, then `from database import db` (async motor)
+
+# Frontend
+cd frontend && npm run dev         # Vite on :5173
+```
+
+Loading the extension: `chrome://extensions` → Developer mode → **Load unpacked** → `extension/`.
+
+## Conventions
+
+- **TypeScript strict**, incl. `noUncheckedIndexedAccess`. Extension has no runtime dependencies.
+- **Doc comments** on every exported function: 2–3 lines saying what it does *and why it's shaped
+  that way* (which constraint or requirement it serves). Match the existing density.
+- **Tests are colocated** (`foo.ts` ↔ `foo.test.ts`) and cover parsers, replay, structure, signals,
+  narration, export. Wire-format parsers are tested against real captured response shapes — keep it
+  that way rather than inventing fixtures.
+- **Secrets** live in the gitignored root `.env` (`GOOGLE_CLIENT_ID/SECRET`, `JWT_SECRET`,
+  `MONGODB_URI`). The extension's OAuth client ID is in [extension/src/config.ts](extension/src/config.ts)
+  (public by design). Never commit `.env` or `service-account.json`.
+- Backend routers are thin; the license router lazily auto-provisions a free-tier license, and
+  **no endpoint lets a client change its own license** — that stays for a payment processor's
+  webhooks, which is deferred.

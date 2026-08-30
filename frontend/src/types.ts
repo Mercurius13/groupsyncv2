@@ -5,69 +5,21 @@ export interface Professor {
   institution_id: string | null;
 }
 
-export interface ClassRecord {
+/** Backend E3 — the ONLY entity besides the professor's own account. The
+ *  frontend never receives student data or analysis output (C1): analysis
+ *  lives and dies in the extension popup, and class organization lives in
+ *  Canvas. Payments are deferred, so every professor holds an
+ *  auto-provisioned active free-tier license until a processor exists. */
+export interface LicenseRecord {
   id: string;
-  name: string;
-  term: string | null;
   professor_id: string;
-  created_at: string;
-}
-
-export interface AssignmentRecord {
-  id: string;
-  class_id: string;
-  name: string;
-  doc_reference: string | null;
-  created_at: string;
-}
-
-export interface GroupRecord {
-  id: string;
-  assignment_id: string;
-  name: string;
-  /** Count only, for the professor's reference / license seat-tracking
-   *  (decided 2026-06-29) — the backend never stores an actual roster of
-   *  named students. Name resolution happens in the extension. */
-  expected_size: number | null;
-}
-
-export interface DisclosureRecordEntry {
-  id: string;
-  class_id: string | null;
-  assignment_id: string | null;
-  professor_id: string;
-  disclosure_text: string;
-  enabled_at: string;
-}
-
-/** Mirrors extension/src/export/index.ts's ContentStrippedSummary exactly —
- *  this is the only shape evidence ever takes once it leaves the extension
- *  (FRONTEND.md F5.1, C1). Never add a `text`/excerpt field here. */
-export interface ExportedSection {
-  sectionLabel: string;
-  sentences: string[];
-}
-
-export interface AuthorCount {
-  authorId: string;
-  authorName: string | null;
-  originatedChars: number;
-  totalSurvivingChars: number;
-  originShare: number;
-}
-
-export interface ContentStrippedSummary {
-  disclaimer: string;
-  generatedAt: number;
-  sections: ExportedSection[];
-  signalNotes: string[];
-  authorCounts: AuthorCount[];
-}
-
-export interface SavedSummaryRecord {
-  id: string;
-  assignment_id: string;
-  group_id: string;
-  created_at: string;
-  content_stripped_payload: ContentStrippedSummary;
+  tier: "free" | "professor" | "institution";
+  status: string;
+  /** Purchased seat capacity, institutional tier only (null otherwise) —
+   *  a plan number, never derived from any student list. */
+  seat_count: number | null;
+  term_end: string | null;
+  billing_period: string | null;
+  processor_ref: string | null;
+  created_at: string | null;
 }

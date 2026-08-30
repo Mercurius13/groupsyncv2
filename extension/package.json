@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/background/index.ts --bundle --outfile=dist/background.js --format=esm --target=chrome110 && esbuild src/content/index.ts --bundle --outfile=dist/content.js --format=iife --target=chrome110 && esbuild src/content/inject.ts --bundle --outfile=dist/inject.js --format=iife --target=chrome110 && esbuild src/ui/popup.ts --bundle --outfile=dist/popup.js --format=esm --target=chrome110",
+    "build": "esbuild src/background.ts --bundle --outfile=dist/background.js --format=esm --target=chrome110 && esbuild src/content.ts --bundle --outfile=dist/content.js --format=iife --target=chrome110 && esbuild src/inject.ts --bundle --outfile=dist/inject.js --format=iife --target=chrome110 && esbuild src/popup.ts --bundle --outfile=dist/popup.js --format=esm --target=chrome110",
     "watch": "npm run build -- --watch",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
